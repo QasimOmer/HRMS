@@ -78,7 +78,7 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       <form onSubmit={onSubmit} className="space-y-5" noValidate>
         <FormGrid>
           <Field label="Full name" required error={fieldError(form, 'fullName')}>{(a) => <Input {...a} {...form.register('fullName')} />}</Field>
-          <Field label="Company email" required error={fieldError(form, 'email')} hint={me?.tenant.emailDomain ? 'Type the name part only, e.g. ali.khan' : undefined}>{(a) => <CompanyEmailInput {...a} domain={me?.tenant.emailDomain} value={form.watch('email') as string | undefined} onChange={(v) => form.setValue('email', v as never, { shouldValidate: form.formState.isSubmitted })} />}</Field>
+          <Field label="Company email" required error={fieldError(form, 'email')} hint={(me?.tenant.emailDomains?.length ?? 0) > 1 ? 'Type the name part, e.g. ali.khan, and pick the domain' : me?.tenant.emailDomain ? 'Type the name part only, e.g. ali.khan' : undefined}>{(a) => <CompanyEmailInput {...a} domain={me?.tenant.emailDomain} domains={me?.tenant.emailDomains} value={form.watch('email') as string | undefined} onChange={(v) => form.setValue('email', v as never, { shouldValidate: form.formState.isSubmitted })} />}</Field>
           <Field label="Department" required error={fieldError(form, 'departmentId')}>{(a) => <DepartmentSelect {...a} {...form.register('departmentId')} />}</Field>
           <Field label="Level" required error={fieldError(form, 'levelId')}>
             {(a) => (

@@ -37,6 +37,8 @@ export interface Me {
     logoFileId: string | null;
     /** Login emails of this company end with @emailDomain. */
     emailDomain: string | null;
+    /** Every domain login emails may use: the main one first, then any extra ones. */
+    emailDomains: string[];
     /** Feature modules in the company's plan. */
     modules: string[];
     maxEmployees: number | null;

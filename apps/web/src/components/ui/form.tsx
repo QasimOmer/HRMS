@@ -133,10 +133,12 @@ export const PhoneInput = formatted(formatPhone, { type: 'tel', inputMode: 'tel'
 
 /**
  * Company login email: the person types only the name part; "@<domain>" is fixed and can't be edited.
+ * With several company domains (`domains`), the domain is picked from a list instead.
  * `value` / `onChange` work with the full address. Without a domain it's a normal email field.
  */
 export function CompanyEmailInput({
   domain,
+  domains,
   value,
   onChange,
   id,
@@ -145,6 +147,8 @@ export function CompanyEmailInput({
   'aria-describedby': describedBy,
 }: {
   domain: string | null | undefined;
+  /** All allowed domains (main first). Takes precedence over `domain` when given. */
+  domains?: string[] | null;
   value: string | undefined;
   onChange: (email: string) => void;
   id?: string;
@@ -152,11 +156,15 @@ export function CompanyEmailInput({
   'aria-invalid'?: boolean;
   'aria-describedby'?: string;
 }) {
-  if (!domain) {
+  const list = domains?.length ? domains : domain ? [domain] : [];
+  if (!list.length) {
     return <Input id={id} type="email" value={value ?? ''} onChange={(e) => onChange(e.target.value)} aria-invalid={invalid} aria-describedby={describedBy} />;
   }
-  const suffix = `@${domain}`;
+  const typedDomain = value?.toLowerCase().split('@')[1];
+  const current = typedDomain && list.includes(typedDomain) ? typedDomain : list[0]!;
+  const suffix = `@${current}`;
   const local = value ? (value.toLowerCase().endsWith(suffix) ? value.slice(0, -suffix.length) : value.split('@')[0]!) : '';
+  const domainBox = 'flex shrink-0 items-center border-l bg-muted px-3 text-sm text-muted-foreground select-none';
   return (
     <div className={cn('flex h-9 w-full overflow-hidden rounded-md border border-input bg-card shadow-xs focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40', invalid && 'border-danger')}>
       <input
@@ -174,7 +182,19 @@ export function CompanyEmailInput({
         aria-describedby={describedBy}
         className="min-w-0 flex-1 bg-transparent px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground/70"
       />
-      <span className="flex shrink-0 items-center border-l bg-muted px-3 text-sm text-muted-foreground select-none" title="Company email domain (set by your provider)">{suffix}</span>
+      {list.length > 1 ? (
+        <select
+          aria-label="Email domain"
+          value={current}
+          onChange={(e) => onChange(local ? `${local}@${e.target.value}` : '')}
+          className={cn(domainBox, 'cursor-pointer outline-none')}
+          title="Company email domain (set by your provider)"
+        >
+          {list.map((d) => <option key={d} value={d}>@{d}</option>)}
+        </select>
+      ) : (
+        <span className={domainBox} title="Company email domain (set by your provider)">{suffix}</span>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { suggestEmailDomain, type CreateCompanyInput, type LoginInput } from '@hrms/shared';
+import { companyEmailDomains, suggestEmailDomain, type CreateCompanyInput, type LoginInput } from '@hrms/shared';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { config } from '../../config';
@@ -7,6 +7,7 @@ import { als } from '../../common/context';
 import { hashPassword, randomToken, sha256, verifyPassword } from '../../common/crypto';
 import { badRequest, conflict } from '../../common/errors';
 import { emailInUse } from '../../common/util';
+import { domainUsedByOther } from '../../common/email-domains';
 import { AuditService } from '../../core/audit.service';
 import { MailService } from '../../core/mail.service';
 import { PlatformSettingsService } from '../platform/platform-settings.service';
@@ -108,7 +109,7 @@ export class AuthService {
     if (input.planId && !plan) throw badRequest('Choose a valid plan', 'PLAN_NOT_FOUND');
 
     // Company email domain: the one given, or one made from the company name (then the workspace) that is free.
-    const domainTaken = async (d: string) => (await this.db.root.select({ id: tenants.id }).from(tenants).where(eq(tenants.emailDomain, d)).limit(1)).length > 0;
+    const domainTaken = (d: string) => domainUsedByOther(this.db, d);
     let domain = input.emailDomain ?? suggestEmailDomain(input.companyName);
     if (await domainTaken(domain)) {
       if (input.emailDomain) throw conflict(`The email domain ${domain} is already used by another company`, 'DOMAIN_TAKEN');
@@ -475,7 +476,7 @@ export class AuthService {
       },
       employee: emp ?? null,
       onboardingRequired: !!emp && !emp.onboardingCompletedAt,
-      tenant: { id: tenant!.id, name: tenant!.name, slug: tenant!.slug, timezone: tenant!.timezone, currency: tenant!.currency, logoFileId: tenant!.logoFileId, emailDomain: tenant!.emailDomain, modules: tenant!.modules, maxEmployees: tenant!.maxEmployees, settings: tenant!.settings, billingStatus: tenant!.billingStatus, billingCycle: tenant!.billingCycle, paidUntil: tenant!.paidUntil, isDemo: tenant!.isDemo },
+      tenant: { id: tenant!.id, name: tenant!.name, slug: tenant!.slug, timezone: tenant!.timezone, currency: tenant!.currency, logoFileId: tenant!.logoFileId, emailDomain: tenant!.emailDomain, emailDomains: companyEmailDomains(tenant!), modules: tenant!.modules, maxEmployees: tenant!.maxEmployees, settings: tenant!.settings, billingStatus: tenant!.billingStatus, billingCycle: tenant!.billingCycle, paidUntil: tenant!.paidUntil, isDemo: tenant!.isDemo },
     };
   }
 }

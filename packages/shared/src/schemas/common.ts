@@ -114,6 +114,10 @@ export const emailDomain = z
   .toLowerCase()
   .regex(/^(?=.{3,100}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/, 'Enter a domain like company.com');
 
+/** Every domain a company's login emails may use: the main one first, then the extra ones. */
+export const companyEmailDomains = (t: { emailDomain?: string | null; extraEmailDomains?: string[] | null }): string[] =>
+  [...new Set([t.emailDomain, ...(t.extraEmailDomains ?? [])].filter((d): d is string => !!d))];
+
 /** Suggested company email domain from its name: "Prep Ecom Align" → "prepecomalign.com". */
 export const suggestEmailDomain = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60) || 'company'}.com`;
 

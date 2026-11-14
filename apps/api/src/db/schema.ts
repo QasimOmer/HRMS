@@ -86,6 +86,8 @@ export const tenants = pgTable('tenants', {
   logoFileId: uuid('logo_file_id'),
   /** Login emails of this company end with @<emailDomain>; HR only types the name part. */
   emailDomain: text('email_domain').unique(),
+  /** Other domains this company's login emails may use (e.g. an old or a legal-entity domain). */
+  extraEmailDomains: text('extra_email_domains').array().notNull().default(sql`'{}'::text[]`),
   /** Subscription: plan, the modules it unlocks (editable per company) and the employee limit. */
   planId: uuid('plan_id'),
   modules: jsonb('modules').$type<string[]>().notNull().default(sql`'["ATTENDANCE","LEAVE","PAYROLL","PERFORMANCE","COMPLIANCE","COMMUNITY","BIOMETRIC"]'::jsonb`),

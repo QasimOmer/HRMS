@@ -9,6 +9,7 @@ import { Public, SkipAudit } from '../../common/decorators';
 import { badRequest, conflict, notFound } from '../../common/errors';
 import { loginAttempts } from '../../common/attempt-limiter';
 import { zp } from '../../common/zod.pipe';
+import { domainUsedByOther } from '../../common/email-domains';
 import { DbService } from '../../db/db.service';
 import { MailService } from '../../core/mail.service';
 import { employees, marketingLeads, platformAdmins, platformPaymentMethods, platformPlans, tenants, userRoles, users } from '../../db/schema';
@@ -119,7 +120,7 @@ export class PlatformController {
         .leftJoin(employees, eq(employees.id, users.employeeId));
       return {
         id: t.id, name: t.name, slug: t.slug, status: t.status, timezone: t.timezone, currency: t.currency,
-        planId: t.planId, modules: t.modules, maxEmployees: t.maxEmployees, emailDomain: t.emailDomain, createdAt: t.createdAt,
+        planId: t.planId, modules: t.modules, maxEmployees: t.maxEmployees, emailDomain: t.emailDomain, extraEmailDomains: t.extraEmailDomains, createdAt: t.createdAt,
         activeEmployees: c?.active ?? 0, totalEmployees: c?.total ?? 0, superAdmins: admins,
         billingCycle: t.billingCycle, billingStatus: t.billingStatus, paidUntil: t.paidUntil, signupSource: t.signupSource, isDemo: t.isDemo,
       };
@@ -155,9 +156,17 @@ export class PlatformController {
     if (body.billingCycle !== undefined) set.billingCycle = body.billingCycle; // applies from the next invoice
     if (body.isDemo !== undefined) set.isDemo = body.isDemo;
     if (body.emailDomain !== undefined) {
-      const [taken] = await this.db.root.select({ id: tenants.id }).from(tenants).where(eq(tenants.emailDomain, body.emailDomain));
-      if (taken && taken.id !== id) throw conflict(`The email domain ${body.emailDomain} is already used by another company`, 'DOMAIN_TAKEN');
+      if (await domainUsedByOther(this.db, body.emailDomain, id)) throw conflict(`The email domain ${body.emailDomain} is already used by another company`, 'DOMAIN_TAKEN');
       set.emailDomain = body.emailDomain; // existing accounts keep their emails; new ones use the new domain
+    }
+    if (body.extraEmailDomains !== undefined) {
+      const [cur] = await this.db.root.select({ main: tenants.emailDomain }).from(tenants).where(eq(tenants.id, id));
+      const main = set.emailDomain ?? cur?.main;
+      const extra = [...new Set(body.extraEmailDomains)].filter((d) => d !== main);
+      for (const d of extra) {
+        if (await domainUsedByOther(this.db, d, id)) throw conflict(`The email domain ${d} is already used by another company`, 'DOMAIN_TAKEN');
+      }
+      set.extraEmailDomains = extra;
     }
     // Tenants can only be updated from inside their own scope (RLS policy).
     const [row] = await this.db.inTenant(id, (tx) => tx.update(tenants).set(set).where(eq(tenants.id, id)).returning({ id: tenants.id, status: tenants.status, planId: tenants.planId, modules: tenants.modules, maxEmployees: tenants.maxEmployees }));

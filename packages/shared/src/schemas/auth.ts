@@ -50,6 +50,8 @@ export const companyUpdateSchema = z.object({
   modules: z.array(z.enum(MODULES)).optional(),
   maxEmployees: z.coerce.number().int().min(1).max(100000).nullable().optional(),
   emailDomain: emailDomain.optional(),
+  /** Additional domains for login emails, besides `emailDomain`. */
+  extraEmailDomains: z.array(emailDomain).max(10, 'At most 10 extra domains').optional(),
   billingCycle: z.enum(['MONTHLY', 'ANNUAL']).optional(),
   /** Use this company as the public read-only demo. */
   isDemo: z.boolean().optional(),

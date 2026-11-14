@@ -18,7 +18,7 @@ import { CompanyBilling } from '../../billing';
 
 interface Detail {
   id: string; name: string; slug: string; status: 'ACTIVE' | 'SUSPENDED'; timezone: string; currency: string;
-  planId: string | null; modules: Module[]; maxEmployees: number | null; emailDomain: string | null; createdAt: string;
+  planId: string | null; modules: Module[]; maxEmployees: number | null; emailDomain: string | null; extraEmailDomains: string[]; createdAt: string;
   activeEmployees: number; totalEmployees: number;
   superAdmins: { id: string; email: string; status: string; lastLoginAt: string | null; name: string | null }[];
   billingCycle: 'MONTHLY' | 'ANNUAL'; billingStatus: 'PAID' | 'DUE' | 'UNPAID'; paidUntil: string | null; signupSource: 'PLATFORM' | 'SELF'; isDemo: boolean;
@@ -36,16 +36,21 @@ export default function CompanyPage({ params }: { params: Promise<{ id: string }
   const [modules, setModules] = useState<Module[]>([]);
   const [max, setMax] = useState<string>('');
   const [domain, setDomain] = useState<string>('');
+  const [extra, setExtra] = useState<string>('');
   useEffect(() => {
     if (!c) return;
     setPlanId(c.planId ?? '');
     setModules(c.modules);
     setMax(c.maxEmployees ? String(c.maxEmployees) : '');
     setDomain(c.emailDomain ?? '');
+    setExtra((c.extraEmailDomains ?? []).join(', '));
   }, [c]);
 
+  // Extra domains are typed as a comma- or space-separated list.
+  const extraList = [...new Set(extra.split(/[\s,;]+/).map((d) => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean))];
+  const extraChanged = extraList.join(',') !== (c?.extraEmailDomains ?? []).join(',');
   const inv = ['/platform/companies', '/platform/plans'];
-  const save = useAction('patch', key, { invalidate: inv, success: 'Subscription saved. Changes apply to the company right away.', body: () => ({ planId: planId || null, modules, maxEmployees: max ? Number(max) : null, ...(domain && domain !== c?.emailDomain ? { emailDomain: domain } : {}) }) });
+  const save = useAction('patch', key, { invalidate: inv, success: 'Subscription saved. Changes apply to the company right away.', body: () => ({ planId: planId || null, modules, maxEmployees: max ? Number(max) : null, ...(domain && domain !== c?.emailDomain ? { emailDomain: domain } : {}), ...(extraChanged ? { extraEmailDomains: extraList } : {}) }) });
   const status = useAction<'ACTIVE' | 'SUSPENDED'>('patch', key, { invalidate: inv, success: (r) => ((r as { status: string }).status === 'SUSPENDED' ? 'Company suspended: nobody can sign in' : 'Company reactivated'), body: (s) => ({ status: s }) });
   const welcome = useAction<unknown, { sent: string[] }>('post', `${key}/welcome`, { success: (r) => `Welcome email sent to ${(r as { sent: string[] }).sent.join(', ')}`, body: () => ({}) });
 
@@ -64,7 +69,7 @@ export default function CompanyPage({ params }: { params: Promise<{ id: string }
   };
   const plan = plans?.find((p) => p.id === planId);
   const custom = plan && (plan.modules.length !== modules.length || plan.modules.some((m) => !modules.includes(m)) || (plan.maxEmployees ?? '') !== (max ? Number(max) : ''));
-  const dirty = (c.planId ?? '') !== planId || c.modules.length !== modules.length || c.modules.some((m) => !modules.includes(m)) || String(c.maxEmployees ?? '') !== max || (c.emailDomain ?? '') !== domain;
+  const dirty = (c.planId ?? '') !== planId || c.modules.length !== modules.length || c.modules.some((m) => !modules.includes(m)) || String(c.maxEmployees ?? '') !== max || (c.emailDomain ?? '') !== domain || extraChanged;
 
   return (
     <>
@@ -99,6 +104,7 @@ export default function CompanyPage({ params }: { params: Promise<{ id: string }
               )}</Field>
               <Field label="Employee limit" hint="Active employees. Leave empty for no limit.">{(a) => <Input {...a} type="number" min={1} value={max} onChange={(e) => setMax(e.target.value)} />}</Field>
               <Field label="Email domain" hint="New login emails end with @this. Existing accounts keep their emails.">{(a) => <Input {...a} value={domain} onChange={(e) => setDomain(e.target.value.trim().toLowerCase().replace(/^@/, ''))} placeholder="company.com" />}</Field>
+              <Field label="Extra email domains" hint="Optional. Other domains staff emails may use, separated by commas.">{(a) => <Input {...a} value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="company-llc.com, oldname.com" autoCapitalize="none" spellCheck={false} />}</Field>
             </FormGrid>
             {custom && <p className="rounded-md bg-warning-soft px-3 py-2 text-sm text-warning">Modules or limit differ from the {plan!.name} plan: this company has a custom deal.</p>}
             <ModulePicker value={modules} onChange={setModules} />

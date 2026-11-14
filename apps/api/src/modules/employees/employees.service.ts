@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   PERMISSIONS as P,
   canAssignRole,
+  companyEmailDomains,
   joinedLabel,
   tenureLabel,
   type EmployeeInput,
@@ -210,11 +211,13 @@ export class EmployeesService {
     return { ...emp, userId: user.id };
   }
 
-  /** New or changed login emails must use the company's email domain (when one is set). */
+  /** New or changed login emails must use one of the company's email domains (when one is set). */
   private async assertCompanyEmail(email: string) {
-    const [t] = await this.db.tx.select({ domain: tenants.emailDomain }).from(tenants).where(eq(tenants.id, currentUser().tenantId));
-    if (t?.domain && !email.toLowerCase().endsWith(`@${t.domain}`)) {
-      throw badRequest(`Company emails must end with @${t.domain}`, 'EMAIL_DOMAIN');
+    const [t] = await this.db.tx.select({ emailDomain: tenants.emailDomain, extraEmailDomains: tenants.extraEmailDomains }).from(tenants).where(eq(tenants.id, currentUser().tenantId));
+    const domains = t ? companyEmailDomains(t) : [];
+    const at = email.toLowerCase().split('@').pop();
+    if (domains.length && !domains.includes(at ?? '')) {
+      throw badRequest(`Company emails must end with ${domains.map((d) => `@${d}`).join(' or ')}`, 'EMAIL_DOMAIN');
     }
   }
 

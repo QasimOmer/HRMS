@@ -12,3 +12,4 @@ storage/
 *.log
 *.local.md
 .DS_Store
+.vercel

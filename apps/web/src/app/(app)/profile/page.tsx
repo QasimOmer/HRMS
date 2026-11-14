@@ -1,6 +1,6 @@
 'use client';
 
-import { BLOOD_GROUPS, changePasswordSchema, resignationSchema, selfProfileSchema } from '@hrms/shared';
+import { BLOOD_GROUPS, changePasswordSchema, resignationSchema, selfProfileSchema, joinedLabel } from '@hrms/shared';
 import { Camera, Lock } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef } from 'react';
@@ -9,13 +9,14 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CareerTimeline, DocumentsPanel } from '@/components/employee-panels';
 import { Button } from '@/components/ui/button';
 import { Avatar, Badge, Card, CardBody, CardHeader, KeyValue, PageHeader, Skeleton, StatusBadge } from '@/components/ui/display';
-import { Field, FormGrid, Input, Select, Textarea } from '@/components/ui/form';
+import { Field, FormGrid, Input, Select, Textarea, CnicInput, PhoneInput } from '@/components/ui/form';
 import { Tabs } from '@/components/ui/overlay';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
 import { date, money } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { IdCard, useIdCardContext } from '@/components/id-card';
 
 export interface EmployeeDetail {
   id: string;
@@ -29,6 +30,7 @@ export interface EmployeeDetail {
   emergencyContact: string | null;
   contactNo: string | null;
   dateOfBirth: string | null;
+  medicalEligible?: boolean;
   avatarFileId: string | null;
   departmentId: string;
   departmentName: string;
@@ -48,6 +50,7 @@ export interface EmployeeDetail {
   roles: string[];
   accountStatus: string | null;
   tenure: string;
+  createdAt?: string;
   userId: string | null;
 }
 
@@ -79,9 +82,9 @@ function PersonalForm({ emp }: { emp: EmployeeDetail }) {
       <CardBody>
         <FormGrid>
           <Field label="Full name" error={fieldError(form, 'fullName')}>{(a) => <Input {...a} {...form.register('fullName')} />}</Field>
-          <Field label="CNIC number" error={fieldError(form, 'cnic')} hint="e.g. 35202-1234567-1">{(a) => <Input {...a} inputMode="numeric" {...form.register('cnic', empty)} />}</Field>
+          <Field label="CNIC number" error={fieldError(form, 'cnic')} hint="e.g. 35202-1234567-1">{(a) => <CnicInput {...a} {...form.register('cnic', empty)} />}</Field>
           <Field label="Father's name" error={fieldError(form, 'fatherName')}>{(a) => <Input {...a} {...form.register('fatherName', empty)} />}</Field>
-          <Field label="Father's CNIC" error={fieldError(form, 'fatherCnic')}>{(a) => <Input {...a} inputMode="numeric" {...form.register('fatherCnic', empty)} />}</Field>
+          <Field label="Father's CNIC" error={fieldError(form, 'fatherCnic')}>{(a) => <CnicInput {...a} {...form.register('fatherCnic', empty)} />}</Field>
           <Field label="Blood group" error={fieldError(form, 'bloodGroup')}>
             {(a) => (
               <Select {...a} {...form.register('bloodGroup', empty)}>
@@ -90,8 +93,8 @@ function PersonalForm({ emp }: { emp: EmployeeDetail }) {
               </Select>
             )}
           </Field>
-          <Field label="Contact number" error={fieldError(form, 'contactNo')}>{(a) => <Input {...a} type="tel" autoComplete="tel" {...form.register('contactNo', empty)} />}</Field>
-          <Field label="Emergency contact number" error={fieldError(form, 'emergencyContact')}>{(a) => <Input {...a} type="tel" {...form.register('emergencyContact', empty)} />}</Field>
+          <Field label="Contact number" error={fieldError(form, 'contactNo')}>{(a) => <PhoneInput {...a} {...form.register('contactNo', empty)} />}</Field>
+          <Field label="Emergency contact number" error={fieldError(form, 'emergencyContact')}>{(a) => <PhoneInput {...a} {...form.register('emergencyContact', empty)} />}</Field>
         </FormGrid>
         <div className="mt-5 flex justify-end">
           <Button type="submit" loading={form.formState.isSubmitting}>Save changes</Button>
@@ -168,6 +171,17 @@ function ResignationPanel({ employeeId }: { employeeId: string }) {
   );
 }
 
+/** The employee's own ID card, from the company's template; download or print. */
+function MyIdCard({ emp }: { emp: EmployeeDetail }) {
+  const { template, company } = useIdCardContext();
+  return (
+    <Card>
+      <CardHeader title="Your ID card" description="Issued when you joined. Download it as a PDF (front and back) or print it; ask HR if anything on it is wrong." />
+      <CardBody><IdCard person={emp} template={template} company={company} /></CardBody>
+    </Card>
+  );
+}
+
 function ProfileInner() {
   const params = useSearchParams();
   const { me, refresh } = useAuth();
@@ -178,7 +192,8 @@ function ProfileInner() {
   const tab = params.get('tab') ?? (forced ? 'security' : 'profile');
 
   useEffect(() => {
-    if (forced) toast.message('Please change your password to continue');
+    // Fixed id: re-renders or revisits update the same toast instead of stacking copies.
+    if (forced) toast.message('Please change your password to continue', { id: 'must-change-password' });
   }, [forced]);
 
   const uploadAvatar = async (f: File) => {
@@ -226,7 +241,7 @@ function ProfileInner() {
             <div className="mt-2 flex flex-wrap gap-1.5">
               <Badge tone="primary">{emp.levelCode} – {emp.levelTitle}</Badge>
               <Badge>{emp.employeeCode}</Badge>
-              <Badge tone="info">{emp.tenure}</Badge>
+              <span title={emp.tenure}><Badge tone="info">{joinedLabel(emp.joiningDate)}</Badge></span>
             </div>
           </div>
         </CardBody>
@@ -266,6 +281,7 @@ function ProfileInner() {
             ),
           },
           { value: 'documents', label: 'Documents', content: <DocumentsPanel employeeId={emp.id} self /> },
+          { value: 'id-card', label: 'ID card', content: <MyIdCard emp={emp} /> },
           { value: 'career', label: 'Career', content: <CareerTimeline employeeId={emp.id} currency={me.tenant.currency} alwaysShow /> },
           { value: 'resignation', label: 'Resignation', content: <ResignationPanel employeeId={emp.id} /> },
           { value: 'security', label: 'Security', content: <SecurityPanel forced={forced} /> },

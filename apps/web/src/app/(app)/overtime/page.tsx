@@ -6,16 +6,18 @@ import { useState } from 'react';
 import { DecisionButtons } from '@/components/domain';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, PageHeader, Stat, StatusBadge } from '@/components/ui/display';
-import { Field, Input, Select, Textarea } from '@/components/ui/form';
+import { Field, FormGrid, Input, Select, Textarea } from '@/components/ui/form';
 import { Dialog, Tabs } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
 import { useAuth } from '@/lib/auth';
 import { fieldError, useZodForm } from '@/lib/form';
-import { date, hours } from '@/lib/format';
+import { date, hours, todayLocal } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
 
 interface OT { id: string; employeeId: string; employeeName: string; date: string; minutes: number; approvedMinutes: number | null; workDescription: string | null; status: string; currentStep: string | null; canDecide: boolean }
-interface Comp { id: string; employeeName: string; type: 'PAID' | 'HALF_DAY'; minutes: number; date: string | null; reason: string; status: string; currentStep: string | null; createdAt: string; canDecide: boolean }
+interface Comp { id: string; employeeName: string; type: 'PAID' | 'HALF_DAY' | 'REDUCED_HOURS'; minutes: number; date: string | null; reason: string; status: string; currentStep: string | null; createdAt: string; canDecide: boolean }
+const compLabel = (c: Comp) => (c.type === 'PAID' ? 'Paid' : c.type === 'HALF_DAY' ? `Half day · ${date(c.date)}` : `Shorter day · ${date(c.date)}`);
+
 interface Balance { earnedMinutes: number; usedMinutes: number; availableMinutes: number; dayMinutes: number }
 
 function RequestDialog({ open, onOpenChange, balance }: { open: boolean; onOpenChange: (o: boolean) => void; balance?: Balance }) {
@@ -27,10 +29,15 @@ function RequestDialog({ open, onOpenChange, balance }: { open: boolean; onOpenC
       footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button loading={submit.isPending} onClick={form.handleSubmit((v) => submit.mutate(v))}>Submit</Button></>}>
       <div className="space-y-4">
         <Field label="How would you like to use it?" error={fieldError(form, 'type')}>
-          {(a) => <Select {...a} {...form.register('type')}><option value="HALF_DAY">Half day off (emergency)</option><option value="PAID">Paid compensation (if your department allows)</option></Select>}
+          {(a) => <Select {...a} {...form.register('type')}><option value="HALF_DAY">Half day off (emergency)</option><option value="REDUCED_HOURS">Work fewer hours on a day (if your Team Lead / HR allows)</option><option value="PAID">Paid compensation (if your department allows)</option></Select>}
         </Field>
         {type === 'HALF_DAY' ? (
           <Field label="Half-day date" required error={fieldError(form, 'date')} hint={`Uses ${hours(Math.round((balance?.dayMinutes ?? 480) / 2))} of overtime`}>{(a) => <Input {...a} type="date" {...form.register('date')} />}</Field>
+        ) : type === 'REDUCED_HOURS' ? (
+          <FormGrid>
+            <Field label="Working day to shorten" required error={fieldError(form, 'date')} hint="Usually the next working day">{(a) => <Input {...a} type="date" min={todayLocal()} {...form.register('date')} />}</Field>
+            <Field label="Fewer minutes required" required error={fieldError(form, 'minutes')} hint="e.g. 120 = 2 hours">{(a) => <Input {...a} type="number" min={30} step={30} {...form.register('minutes', { valueAsNumber: true })} />}</Field>
+          </FormGrid>
         ) : (
           <Field label="Minutes to be paid" required error={fieldError(form, 'minutes')}>{(a) => <Input {...a} type="number" min={30} step={30} {...form.register('minutes', { valueAsNumber: true })} />}</Field>
         )}
@@ -64,7 +71,7 @@ function Mine() {
       <Card>
         <CardHeader title="My compensation requests" />
         <DataTable rows={comp} rowKey={(c) => c.id} empty="No requests yet" columns={[
-          { key: 't', header: 'Type', cell: (c) => (c.type === 'PAID' ? 'Paid' : `Half day · ${date(c.date)}`) },
+          { key: 't', header: 'Type', cell: (c) => compLabel(c) },
           { key: 'm', header: 'Overtime used', cell: (c) => hours(c.minutes) },
           { key: 's', header: 'Status', cell: (c) => <StatusBadge status={c.status} step={c.currentStep} /> },
         ]} />
@@ -94,7 +101,7 @@ function TeamApprovals() {
         <CardHeader title="Compensation requests" />
         <DataTable rows={comp} rowKey={(c) => c.id} empty="No requests" columns={[
           { key: 'e', header: 'Employee', cell: (c) => <span className="font-medium">{c.employeeName}</span> },
-          { key: 't', header: 'Type', cell: (c) => (c.type === 'PAID' ? 'Paid' : `Half day · ${date(c.date)}`) },
+          { key: 't', header: 'Type', cell: (c) => compLabel(c) },
           { key: 'm', header: 'Minutes', cell: (c) => hours(c.minutes) },
           { key: 'r', header: 'Reason', hideOnMobile: true, cell: (c) => <span className="text-muted-foreground">{c.reason}</span> },
           { key: 's', header: 'Status', cell: (c) => <StatusBadge status={c.status} step={c.currentStep} /> },
@@ -110,7 +117,7 @@ export default function OvertimePage() {
   const { can, me } = useAuth();
   return (
     <>
-      <PageHeader title="Overtime & compensation" description="Overtime is approved by your Team Lead. Use it as paid compensation or a half day off." />
+      <PageHeader title="Overtime & compensation" description="Overtime is approved by your Team Lead. Use it as paid compensation, a half day off, compensation leave, or fewer hours on a working day." />
       <Tabs tabs={[
         { value: 'me', label: 'Mine', hidden: !me?.employee, content: <Mine /> },
         { value: 'team', label: 'Approvals', hidden: !can(P.OVERTIME_APPROVE_TL, P.COMPENSATION_APPROVE_TL, P.COMPENSATION_APPROVE_HR, P.ATTENDANCE_READ_ALL), content: <TeamApprovals /> },

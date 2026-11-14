@@ -1,7 +1,9 @@
 'use client';
 
 import { HIERARCHY_LABELS, HIERARCHY_TIERS, type HierarchyTier } from '@hrms/shared';
-import { Network } from 'lucide-react';
+import { Minus, Network, Plus, ZoomIn, ZoomOut } from 'lucide-react';
+import { CompanyLogo } from '@/components/brand';
+import { useAuth } from '@/lib/auth';
 import { useMemo, useState } from 'react';
 import { Avatar, Card, EmptyState, LoadingRows, PageHeader } from '@/components/ui/display';
 import { cn } from '@/lib/format';
@@ -29,24 +31,26 @@ function Person({ n, small }: { n: Node; small?: boolean }) {
   );
 }
 
-function Tree({ node, children: kids, all }: { node: Node; children: Node[]; all: Map<string, Node[]> }) {
+/** One person in the reporting tree: a card, with their reports below it (collapsible). */
+function TreeNode({ node, all }: { node: Node; all: Map<string, Node[]> }) {
+  const kids = all.get(node.id) ?? [];
   const [open, setOpen] = useState(true);
   return (
-    <li className="relative">
-      <div className="flex items-center gap-2">
+    <li>
+      <div className="org-card relative flex w-52 flex-col items-center rounded-xl border bg-card px-3 pt-4 pb-3 text-center shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+        <Avatar name={node.fullName} fileId={node.avatarFileId} size="lg" />
+        <p className="mt-2 w-full truncate text-sm font-semibold" title={node.fullName}>{node.fullName}</p>
+        <p className="w-full truncate text-xs text-muted-foreground" title={`${node.designation} · ${node.departmentName}`}>{node.designation}</p>
+        <p className="w-full truncate text-xs text-muted-foreground">{node.departmentName}</p>
+        <span className="mt-2 rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-medium text-primary">{HIERARCHY_LABELS[node.hierarchyTier]}</span>
         {kids.length > 0 && (
-          <button onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label={open ? `Collapse ${node.fullName}'s reports` : `Expand ${node.fullName}'s reports`} className="flex h-5 w-5 items-center justify-center rounded border text-xs text-muted-foreground hover:bg-muted">
-            {open ? '−' : '+'}
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label={open ? `Hide ${node.fullName}'s ${kids.length} reports` : `Show ${node.fullName}'s ${kids.length} reports`}
+            className="absolute -bottom-3 left-1/2 z-10 flex h-6 min-w-6 -translate-x-1/2 items-center justify-center gap-0.5 rounded-full border bg-card px-1.5 text-[11px] font-medium text-muted-foreground shadow-sm hover:border-primary hover:text-primary">
+            {open ? <Minus className="h-3 w-3" /> : <Plus className="h-3 w-3" />}{kids.length}
           </button>
         )}
-        <Person n={node} small />
-        {kids.length > 0 && <span className="text-xs text-muted-foreground">{kids.length} report{kids.length === 1 ? '' : 's'}</span>}
       </div>
-      {open && kids.length > 0 && (
-        <ul className="mt-2 ml-2.5 space-y-2 border-l pl-6">
-          {kids.map((k) => <Tree key={k.id} node={k} children={all.get(k.id) ?? []} all={all} />)}
-        </ul>
-      )}
+      {open && kids.length > 0 && <ul>{kids.map((k) => <TreeNode key={k.id} node={k} all={all} />)}</ul>}
     </li>
   );
 }
@@ -55,6 +59,8 @@ function Tree({ node, children: kids, all }: { node: Node; children: Node[]; all
 export default function OrgChartPage() {
   const { data, isLoading } = useApi<Node[]>('/directory/org-chart');
   const [view, setView] = useState<'tiers' | 'reporting'>('tiers');
+  const [zoom, setZoom] = useState(1);
+  const { me } = useAuth();
   const { byTier, roots, children } = useMemo(() => {
     const list = data ?? [];
     const ids = new Set(list.map((n) => n.id));
@@ -99,8 +105,30 @@ export default function OrgChartPage() {
           ))}
         </div>
       ) : (
-        <Card className="overflow-x-auto p-5">
-          <ul className="space-y-3">{roots.map((r) => <Tree key={r.id} node={r} children={children.get(r.id) ?? []} all={children} />)}</ul>
+        <Card className="relative overflow-hidden">
+          <div className="absolute top-3 right-3 z-10 flex items-center gap-1 rounded-lg border bg-card/90 p-1 shadow-sm backdrop-blur">
+            <button type="button" onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(1)))} className="rounded p-1.5 hover:bg-muted" aria-label="Zoom out"><ZoomOut className="h-4 w-4" /></button>
+            <span className="w-10 text-center text-xs tabular-nums text-muted-foreground">{Math.round(zoom * 100)}%</span>
+            <button type="button" onClick={() => setZoom((z) => Math.min(1.4, +(z + 0.1).toFixed(1)))} className="rounded p-1.5 hover:bg-muted" aria-label="Zoom in"><ZoomIn className="h-4 w-4" /></button>
+            <button type="button" onClick={() => setZoom(1)} className="rounded px-2 py-1 text-xs hover:bg-muted">Reset</button>
+          </div>
+          <div className="overflow-auto p-8 pt-14">
+            <div className="org-tree mx-auto w-max origin-top transition-transform" style={{ transform: `scale(${zoom})` }}>
+              <ul>
+                <li>
+                  {/* Everyone without a manager hangs under the company, so it reads as one tree. */}
+                  <div className="flex w-56 items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary-soft px-4 py-3 shadow-sm">
+                    <CompanyLogo name={me?.tenant.name ?? 'Company'} logoFileId={me?.tenant.logoFileId} />
+                    <div className="min-w-0 text-left">
+                      <p className="truncate text-sm font-semibold">{me?.tenant.name}</p>
+                      <p className="text-xs text-muted-foreground">{data.length} people</p>
+                    </div>
+                  </div>
+                  <ul>{roots.map((r) => <TreeNode key={r.id} node={r} all={children} />)}</ul>
+                </li>
+              </ul>
+            </div>
+          </div>
         </Card>
       )}
     </>

@@ -16,10 +16,10 @@ import {
 import { and, asc, desc, eq, gte, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { currentUser } from '../../common/context';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
 import { monthRange, todayIn } from '../../common/tz';
-import { one, scoped } from '../../common/util';
+import { one, scoped, requireDelete, assertUnused, countWhere } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { ApprovalsService } from '../../core/approvals.service';
 import { NotificationsService } from '../../core/notifications.service';
@@ -46,6 +46,7 @@ const listQuery = z.object({
   year: z.coerce.number().int().optional(),
 });
 
+@RequireModule('LEAVE')
 @Controller()
 export class LeaveController {
   constructor(
@@ -76,6 +77,21 @@ export class LeaveController {
   @Audit('leave.type_updated', 'leave_type')
   async updateType(@Param('id', ParseUUIDPipe) id: string, @Body(zp(leaveTypeSchema)) body: z.infer<typeof leaveTypeSchema>) {
     return one(await this.db.tx.update(leaveTypes).set(body).where(eq(leaveTypes.id, id)).returning(), 'Leave type');
+  }
+
+  @Delete('leave/types/:id')
+  @RequireAny(P.LEAVE_MANAGE)
+  @Audit('leave.type_deleted', 'leave_type')
+  async removeType(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    one(await tx.select({ id: leaveTypes.id }).from(leaveTypes).where(eq(leaveTypes.id, id)), 'Leave type');
+    assertUnused('This leave type', [
+      [await countWhere(tx, leaveRequests, eq(leaveRequests.leaveTypeId, id)), 'leave request(s)'],
+      [await countWhere(tx, leaveAllocations, eq(leaveAllocations.leaveTypeId, id)), 'balance adjustment(s)'],
+    ]);
+    await tx.delete(leaveTypes).where(eq(leaveTypes.id, id));
+    return { id, deleted: true };
   }
 
   @Post('leave/allocations')
@@ -218,6 +234,7 @@ export class LeaveController {
 
   /* ---------------- Holidays (C4) ---------------- */
 
+  @RequireModule('CORE')
   @Get('holidays')
   holidays(@Query(zp(z.object({ year: z.coerce.number().int().optional() }))) q: { year?: number }) {
     const base = this.db.tx.select({ h: holidays, departmentName: departments.name }).from(holidays).leftJoin(departments, eq(departments.id, holidays.departmentId));
@@ -226,6 +243,7 @@ export class LeaveController {
       .then((rows) => rows.map((r) => ({ ...r.h, departmentName: r.departmentName })));
   }
 
+  @RequireModule('CORE')
   @Post('holidays')
   @RequireAny(P.HOLIDAYS_MANAGE)
   @Audit('holiday.created', 'holiday')
@@ -233,6 +251,7 @@ export class LeaveController {
     return one(await this.db.tx.insert(holidays).values({ ...body, tenantId: currentUser().tenantId }).returning());
   }
 
+  @RequireModule('CORE')
   @Delete('holidays/:id')
   @RequireAny(P.HOLIDAYS_MANAGE)
   @Audit('holiday.deleted', 'holiday')
@@ -243,6 +262,7 @@ export class LeaveController {
 
   /* ---------------- Company calendar (C5) ---------------- */
 
+  @RequireModule('CORE')
   @Post('calendar/events')
   @RequireAny(P.CALENDAR_MANAGE)
   @Audit('calendar.event_created', 'calendar_event')
@@ -251,6 +271,7 @@ export class LeaveController {
     return one(await this.db.tx.insert(calendarEvents).values({ ...body, departmentId: body.visibility === 'COMPANY' ? null : body.departmentId, tenantId: u.tenantId, createdByUserId: u.userId }).returning());
   }
 
+  @RequireModule('CORE')
   @Delete('calendar/events/:id')
   @RequireAny(P.CALENDAR_MANAGE)
   @Audit('calendar.event_deleted', 'calendar_event')
@@ -259,6 +280,7 @@ export class LeaveController {
     return { id, deleted: true };
   }
 
+  @RequireModule('CORE')
   @Get('calendar')
   async calendar(@Query(zp(calendarQuery)) q: z.infer<typeof calendarQuery>) {
     const user = currentUser();

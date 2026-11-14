@@ -1,0 +1,1 @@
+ALTER TABLE "platform_settings" ADD COLUMN "site_name" text;

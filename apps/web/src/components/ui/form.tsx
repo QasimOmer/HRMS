@@ -22,7 +22,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
 
 export function Label({ children, htmlFor, className }: { children: ReactNode; htmlFor?: string; className?: string }) {
   return (
-    <label htmlFor={htmlFor} className={cn('text-sm font-medium text-foreground', className)}>
+    <label htmlFor={htmlFor} className={cn('block text-sm font-medium text-foreground', className)}>
       {children}
     </label>
   );
@@ -40,7 +40,7 @@ export function Field({
   className,
   children,
 }: {
-  label: string;
+  label: ReactNode;
   error?: string;
   hint?: string;
   required?: boolean;
@@ -80,4 +80,101 @@ export function Checkbox({ label, className, ...p }: InputHTMLAttributes<HTMLInp
 
 export function FormGrid({ children, cols = 2 }: { children: ReactNode; cols?: 1 | 2 | 3 }) {
   return <div className={cn('grid gap-4', cols === 2 && 'sm:grid-cols-2', cols === 3 && 'sm:grid-cols-3')}>{children}</div>;
+}
+
+/* ---------------- Formatted inputs (digits only) ---------------- */
+
+/** Pakistani CNIC: 13 digits shown as 35202-1234567-1. */
+export function formatCnic(v: string): string {
+  const d = v.replace(/\D/g, '').slice(0, 13);
+  if (d.length <= 5) return d;
+  if (d.length <= 12) return `${d.slice(0, 5)}-${d.slice(5)}`;
+  return `${d.slice(0, 5)}-${d.slice(5, 12)}-${d.slice(12)}`;
+}
+
+/**
+ * Phone number: digits only, with an optional leading +.
+ * Pakistani numbers are grouped as 0300 1234567 or +92 300 1234567; other countries keep +<digits>.
+ */
+export function formatPhone(v: string): string {
+  const plus = v.trim().startsWith('+');
+  const d = v.replace(/\D/g, '');
+  if (d.startsWith('92') && (plus || d.length > 11)) {
+    const r = d.slice(2, 12);
+    return ['+92', r.slice(0, 3), r.slice(3)].filter(Boolean).join(' ');
+  }
+  if (plus) return `+${d.slice(0, 15)}`;
+  if (d.startsWith('0')) {
+    const r = d.slice(0, 11);
+    return r.length > 4 ? `${r.slice(0, 4)} ${r.slice(4)}` : r;
+  }
+  return d.slice(0, 15);
+}
+
+/** Input that reformats as you type; works with react-hook-form `register` and with controlled values. */
+function formatted(format: (v: string) => string, defaults: InputHTMLAttributes<HTMLInputElement>) {
+  return forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function FormattedInput({ onChange, ...p }, ref) {
+    return (
+      <Input
+        ref={ref}
+        {...defaults}
+        {...p}
+        onChange={(e) => {
+          e.target.value = format(e.target.value);
+          onChange?.(e);
+        }}
+      />
+    );
+  });
+}
+
+export const CnicInput = formatted(formatCnic, { inputMode: 'numeric', placeholder: '35202-1234567-1', maxLength: 15, autoComplete: 'off' });
+export const PhoneInput = formatted(formatPhone, { type: 'tel', inputMode: 'tel', placeholder: '0300 1234567', maxLength: 16, autoComplete: 'tel' });
+
+/**
+ * Company login email: the person types only the name part; "@<domain>" is fixed and can't be edited.
+ * `value` / `onChange` work with the full address. Without a domain it's a normal email field.
+ */
+export function CompanyEmailInput({
+  domain,
+  value,
+  onChange,
+  id,
+  placeholder = 'firstname.lastname',
+  'aria-invalid': invalid,
+  'aria-describedby': describedBy,
+}: {
+  domain: string | null | undefined;
+  value: string | undefined;
+  onChange: (email: string) => void;
+  id?: string;
+  placeholder?: string;
+  'aria-invalid'?: boolean;
+  'aria-describedby'?: string;
+}) {
+  if (!domain) {
+    return <Input id={id} type="email" value={value ?? ''} onChange={(e) => onChange(e.target.value)} aria-invalid={invalid} aria-describedby={describedBy} />;
+  }
+  const suffix = `@${domain}`;
+  const local = value ? (value.toLowerCase().endsWith(suffix) ? value.slice(0, -suffix.length) : value.split('@')[0]!) : '';
+  return (
+    <div className={cn('flex h-9 w-full overflow-hidden rounded-md border border-input bg-card shadow-xs focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40', invalid && 'border-danger')}>
+      <input
+        id={id}
+        value={local}
+        onChange={(e) => {
+          const clean = e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, '');
+          onChange(clean ? `${clean}${suffix}` : '');
+        }}
+        placeholder={placeholder}
+        autoComplete="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        aria-invalid={invalid}
+        aria-describedby={describedBy}
+        className="min-w-0 flex-1 bg-transparent px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground/70"
+      />
+      <span className="flex shrink-0 items-center border-l bg-muted px-3 text-sm text-muted-foreground select-none" title="Company email domain (set by your provider)">{suffix}</span>
+    </div>
+  );
 }

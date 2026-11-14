@@ -1,20 +1,26 @@
-
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "services": {
     "api": {
-    "root": "apps/api",
-    "framework": "nestjs",
-    "buildCommand": "npm run build -w @hrms/shared && npm run build -w @hrms/api"
+      "root": "apps/api",
+      "framework": "nestjs",
+      "buildCommand": "npm run build -w @hrms/shared && npm run build -w @hrms/api && npm run db:migrate:deploy -w @hrms/api"
     },
     "web": {
       "root": "apps/web",
-      "framework": "nextjs"
+      "framework": "nextjs",
+      "buildCommand": "npm run build -w @hrms/shared && npm run build -w @hrms/web"
     }
   },
   "rewrites": [
     {
       "source": "/api/(.*)",
+      "destination": {
+        "service": "api"
+      }
+    },
+    {
+      "source": "/iclock/(.*)",
       "destination": {
         "service": "api"
       }

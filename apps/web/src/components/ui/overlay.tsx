@@ -121,14 +121,17 @@ export const DropdownLabel = ({ children }: { children: ReactNode }) => <DM.Labe
 
 export function Tabs({ tabs, value, onValueChange, defaultValue }: { tabs: { value: string; label: ReactNode; content: ReactNode; hidden?: boolean }[]; value?: string; onValueChange?: (v: string) => void; defaultValue?: string }) {
   const visible = tabs.filter((t) => !t.hidden);
+  // A single tab needs no tab bar.
+  if (visible.length === 1) return <>{visible[0]!.content}</>;
   return (
     <T.Root value={value} onValueChange={onValueChange} defaultValue={defaultValue ?? visible[0]?.value}>
-      <T.List className="mb-5 flex gap-1 overflow-x-auto border-b" aria-label="Sections">
+      {/* Segmented control that wraps onto more lines on small screens (no sideways scrolling). */}
+      <T.List className="mb-5 inline-flex max-w-full flex-wrap gap-1 rounded-lg bg-muted p-1" aria-label="Sections">
         {visible.map((t) => (
           <T.Trigger
             key={t.value}
             value={t.value}
-            className="-mb-px border-b-2 border-transparent px-3 py-2 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground data-[state=active]:border-primary data-[state=active]:text-foreground"
+            className="rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
           >
             {t.label}
           </T.Trigger>

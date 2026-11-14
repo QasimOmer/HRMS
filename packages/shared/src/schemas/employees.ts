@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { BLOOD_GROUPS, EMPLOYMENT_STATUSES, HIERARCHY_TIERS, DOC_CATEGORIES } from '../enums';
 import { ROLES } from '../permissions';
-import { cnic, isoDate, money, optionalText, phone, trimmed, uuid } from './common';
+import { cnic, isoDate, money, optionalText, password, phone, trimmed, uuid } from './common';
 
 /** B1 – fields the employee may edit themselves. */
 export const selfProfileSchema = z.object({
@@ -15,6 +15,10 @@ export const selfProfileSchema = z.object({
 });
 export type SelfProfileInput = z.infer<typeof selfProfileSchema>;
 
+/** What an employee may send for their own profile: their details, plus date of birth once (only while HR hasn't set it). */
+export const selfProfileUpdateSchema = selfProfileSchema.partial().extend({ dateOfBirth: isoDate.optional() });
+export type SelfProfileUpdateInput = z.infer<typeof selfProfileUpdateSchema>;
+
 /** HR-managed employee record (B1 non-editable fields + B7 salary). */
 export const employeeSchema = selfProfileSchema.extend({
   email: z.email().toLowerCase(),
@@ -26,14 +30,19 @@ export const employeeSchema = selfProfileSchema.extend({
   dateOfBirth: isoDate.optional(),
   basicSalary: money.optional(), // defaults from level (B7)
   hierarchyTier: z.enum(HIERARCHY_TIERS).default('MEMBER'),
+  /** D3: whether this person may claim medical expenses. */
+  medicalEligible: z.boolean().optional(),
   workScheduleId: uuid.nullable().optional(),
   roles: z.array(z.enum(ROLES)).default(['EMPLOYEE']),
   sendInvite: z.boolean().default(true),
+  /** Without an invitation, HR sets the first password (optional otherwise). */
+  password: password.optional(),
+  mustChangePassword: z.boolean().default(true),
 });
 export type EmployeeInput = z.infer<typeof employeeSchema>;
 
 export const employeeUpdateSchema = employeeSchema
-  .omit({ roles: true, sendInvite: true })
+  .omit({ roles: true, sendInvite: true, password: true, mustChangePassword: true })
   .partial()
   .extend({ employmentStatus: z.enum(EMPLOYMENT_STATUSES).optional() });
 export type EmployeeUpdateInput = z.infer<typeof employeeUpdateSchema>;
@@ -52,6 +61,7 @@ export const departmentSchema = z.object({
   headEmployeeId: uuid.nullable().optional(),
   foodAllowanceEnabled: z.boolean().default(false),
   paidOvertimeEnabled: z.boolean().default(false),
+  workScheduleId: uuid.nullable().optional(),
   isActive: z.boolean().default(true),
 });
 export type DepartmentInput = z.infer<typeof departmentSchema>;
@@ -112,6 +122,9 @@ export const documentUploadSchema = z.object({
   category: z.enum(DOC_CATEGORIES),
   title: optionalText(150),
 });
+
+/** Bring a former employee back: status ACTIVE again, optionally with their login restored. */
+export const reactivateSchema = z.object({ restoreLogin: z.boolean().default(true) });
 
 export const terminateSchema = z.object({
   exitDate: isoDate,

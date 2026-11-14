@@ -1,18 +1,25 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put } from '@nestjs/common';
 import { PERMISSIONS as P, surveyResponseSchema, surveySchema, type SurveyInput } from '@hrms/shared';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import type { z } from 'zod';
 import { currentUser } from '../../common/context';
 import { hmac } from '../../common/crypto';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
-import { one } from '../../common/util';
+import { one, requireDelete, assertUnused, countWhere } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { NotificationsService } from '../../core/notifications.service';
 import { DbService } from '../../db/db.service';
-import { employees, surveyResponses, surveys, teamMembers, type SurveyQuestion } from '../../db/schema';
+import {
+  employees,
+  surveyResponses,
+  surveys,
+  teamMembers,
+  type SurveyQuestion,
+} from '../../db/schema';
 
 /** E3 performance surveys & F7 team/department surveys. */
+@RequireModule('COMPLIANCE')
 @Controller('surveys')
 export class SurveysController {
   constructor(
@@ -117,6 +124,17 @@ export class SurveysController {
     const [{ n }] = (await this.db.tx.select({ n: sql<number>`count(*)::int` }).from(surveyResponses).where(eq(surveyResponses.surveyId, id))) as [{ n: number }];
     if (n > 0 && JSON.stringify(s.questions) !== JSON.stringify(body.questions)) throw badRequest('Questions cannot change after responses were received');
     return one(await this.db.tx.update(surveys).set({ ...body, questions: body.questions as SurveyQuestion[] }).where(eq(surveys.id, id)).returning());
+  }
+
+  /** Deletes the survey and its responses. */
+  @Delete(':id')
+  @Audit('survey.deleted', 'survey')
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    const s = one(await this.db.tx.select().from(surveys).where(eq(surveys.id, id)), 'Survey');
+    if (!(await this.canManage(s))) throw forbidden();
+    requireDelete();
+    await this.db.tx.delete(surveys).where(eq(surveys.id, id));
+    return { id, deleted: true };
   }
 
   @Post(':id/open')

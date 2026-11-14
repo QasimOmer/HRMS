@@ -6,7 +6,8 @@ import { AuditService } from '../../core/audit.service';
 import { JobsService } from '../../core/jobs.service';
 import { NotificationsService } from '../../core/notifications.service';
 import { DbService } from '../../db/db.service';
-import { employees, posts, tenants, users } from '../../db/schema';
+import { departments, employees, posts, tenants, users } from '../../db/schema';
+import { DEFAULT_BIRTHDAY_BODY, DEFAULT_BIRTHDAY_TITLE, renderBirthdayTemplate } from '@hrms/shared';
 import { AttendanceService } from '../attendance/attendance.service';
 import { EmployeesService } from '../employees/employees.service';
 
@@ -61,11 +62,13 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
       const active = await tx.select({ id: employees.id }).from(employees).where(eq(employees.employmentStatus, 'ACTIVE'));
       for (const e of active) await this.attendance.recompute(e.id, yesterday, yesterday);
 
-      // 2) Birthdays (G3)
+      // 2) Birthdays (G3) – part of the Community module.
+      const [plan] = await tx.select({ modules: tenants.modules, name: tenants.name, settings: tenants.settings }).from(tenants).where(eq(tenants.id, tenantId));
       const mmdd = date.slice(5);
-      const bdays = await tx
-        .select({ id: employees.id, fullName: employees.fullName })
+      const bdays = !plan?.modules.includes('COMMUNITY') ? [] : await tx
+        .select({ id: employees.id, fullName: employees.fullName, designation: employees.designation, department: departments.name })
         .from(employees)
+        .innerJoin(departments, eq(departments.id, employees.departmentId))
         .where(and(eq(employees.employmentStatus, 'ACTIVE'), isNotNull(employees.dateOfBirth), sql`to_char(${employees.dateOfBirth}, 'MM-DD') = ${mmdd}`));
       for (const b of bdays) {
         const [exists] = await tx
@@ -73,7 +76,11 @@ export class SchedulerService implements OnApplicationBootstrap, OnModuleDestroy
           .from(posts)
           .where(and(eq(posts.type, 'BIRTHDAY'), eq(posts.subjectEmployeeId, b.id), sql`to_char(${posts.createdAt}, 'YYYY') = ${date.slice(0, 4)}`));
         if (exists) continue;
-        await tx.insert(posts).values({ tenantId, type: 'BIRTHDAY', title: `Happy birthday, ${b.fullName}! 🎂`, body: `Join us in wishing ${b.fullName} a wonderful birthday!`, subjectEmployeeId: b.id });
+        // The Company Admin's template (Settings → Community), or the default wording.
+        const vars = { name: b.fullName, department: b.department, designation: b.designation, company: plan?.name };
+        const title = renderBirthdayTemplate(plan?.settings.birthdayPostTitle || DEFAULT_BIRTHDAY_TITLE, vars);
+        const body = renderBirthdayTemplate(plan?.settings.birthdayPostBody || DEFAULT_BIRTHDAY_BODY, vars);
+        await tx.insert(posts).values({ tenantId, type: 'BIRTHDAY', title, body, subjectEmployeeId: b.id });
         const everyone = await tx.select({ id: users.id }).from(users).where(eq(users.status, 'ACTIVE'));
         await this.notify.notifyUsers(everyone.map((u) => u.id), { type: 'birthday', title: `It's ${b.fullName}'s birthday today 🎉`, link: '/community' });
       }

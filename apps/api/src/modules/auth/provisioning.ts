@@ -86,7 +86,6 @@ export async function provisionTenant(tx: Tx, tenantId: string, createdByUserId?
     startTime: '09:00',
     endTime: '18:00',
     breakMinutes: 60,
-    graceMinutes: 15,
     workingDays: [1, 2, 3, 4, 5],
     isDefault: true,
   });

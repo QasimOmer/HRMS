@@ -134,8 +134,8 @@ export class PayrollService {
         designation: e.designation,
         departmentName,
         level: `${levelCode} – ${levelTitle}`,
-        cnic: e.cnic,
-        joiningDate: e.joiningDate,
+        joiningDate: e.joiningDate, // CNIC deliberately not copied into payslips (SEC-05)
+        lateMinutes: days.reduce((a, d) => a + d.lateMinutes, 0), // ATT-03: monthly late total
         workingDays: workingDays.length,
         employedDays: employedDays.length,
         foodDays: r.foodDays,
@@ -188,6 +188,20 @@ export class PayrollService {
       .from(payslips)
       .where(eq(payslips.payrollRunId, p.payrollRunId));
     await tx.update(payrollRuns).set({ totalGross: round2(tot?.g ?? 0), totalNet: round2(tot?.n ?? 0) }).where(eq(payrollRuns.id, p.payrollRunId));
+  }
+
+  /**
+   * PAY-08: undo the side effects of finalize() so a locked run can be corrected.
+   * Incentives, claims and paid overtime stay linked to this run so the recalculation picks them up again.
+   */
+  async reopen(runId: string) {
+    const tx = this.db.tx;
+    const booked = await tx.select({ loanId: loanRepayments.loanId }).from(loanRepayments).where(eq(loanRepayments.payrollRunId, runId));
+    await tx.delete(loanRepayments).where(eq(loanRepayments.payrollRunId, runId));
+    for (const loanId of new Set(booked.map((b) => b.loanId))) {
+      if ((await this.loanOutstanding(loanId)) > 0) await tx.update(loans).set({ status: 'ACTIVE' }).where(and(eq(loans.id, loanId), eq(loans.status, 'CLOSED')));
+    }
+    await tx.update(incentives).set({ status: 'APPROVED' }).where(and(eq(incentives.payrollRunId, runId), eq(incentives.status, 'PAID')));
   }
 
   /** Book side effects once a run is fully approved (loan repayments, paid incentives, claims). */

@@ -1,5 +1,27 @@
 import { z } from 'zod';
 
+/**
+ * Plain-language defaults for validation messages (shown in forms and API errors), instead of
+ * library wording like "Too small: expected string to have >=2 characters". Schemas with their own
+ * message keep it.
+ */
+z.config({
+  customError: (iss) => {
+    const n = Number(iss.minimum ?? iss.maximum);
+    if (iss.code === 'too_small' && iss.origin === 'string') return n <= 1 ? 'This field is required' : `Enter at least ${n} characters`;
+    if (iss.code === 'too_big' && iss.origin === 'string') return `Keep it to ${n} characters or fewer`;
+    if (iss.code === 'too_small' && iss.origin === 'number') return `Must be at least ${n}`;
+    if (iss.code === 'too_big' && iss.origin === 'number') return `Must be ${n} or less`;
+    if (iss.code === 'too_small' && iss.origin === 'array') return n <= 1 ? 'Choose at least one' : `Choose at least ${n}`;
+    if (iss.code === 'invalid_type' && iss.input === undefined) return 'This field is required';
+    if (iss.code === 'invalid_type' && iss.expected === 'number') return 'Enter a number';
+    if (iss.code === 'invalid_format' && iss.format === 'email') return 'Enter a valid email address';
+    if (iss.code === 'invalid_format' && iss.format === 'date') return 'Enter a valid date';
+    if (iss.code === 'invalid_value') return 'Choose one of the options';
+    return undefined;
+  },
+});
+
 export const uuid = z.uuid();
 export const isoDate = z.iso.date(); // YYYY-MM-DD
 export const isoDateTime = z.iso.datetime({ offset: true });
@@ -20,10 +42,30 @@ export const cnic = z
     return `${d.slice(0, 5)}-${d.slice(5, 12)}-${d.slice(12)}`;
   });
 
+/**
+ * Phone numbers: Pakistani local (0 + 9–10 digits, e.g. 0300 1234567 or 042 1234567), +92 + 10 digits,
+ * or another country's number starting with + (8–15 digits). Spaces, dashes and brackets are ignored.
+ */
+export function phoneProblem(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  if (/[^0-9+ ()-]/.test(v) || v.indexOf('+') > 0) return 'Use digits only, e.g. 0300 1234567';
+  const d = v.replace(/[^0-9+]/g, '');
+  if (d.startsWith('+92')) return /^\+92\d{10}$/.test(d) ? null : 'A +92 number has 10 digits after +92, e.g. +92 300 1234567';
+  if (d.startsWith('+')) return /^\+\d{8,15}$/.test(d) ? null : 'Enter the full international number, e.g. +44 7911 123456';
+  if (!d.startsWith('0')) return 'Start with 0 (e.g. 0300 1234567) or a country code like +92';
+  if (d.length < 10) return 'This number is too short, e.g. 0300 1234567';
+  if (d.length > 11) return 'This number is too long, e.g. 0300 1234567';
+  return null;
+}
+
 export const phone = z
   .string()
   .trim()
-  .regex(/^\+?[0-9 ()-]{7,20}$/, 'Enter a valid phone number');
+  .superRefine((v, ctx) => {
+    const problem = v ? phoneProblem(v) : 'Enter a phone number';
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  });
 
 export const password = z
   .string()
@@ -50,3 +92,30 @@ export interface Paginated<T> {
   page: number;
   pageSize: number;
 }
+
+/** A real IANA time zone, e.g. "Asia/Karachi" (checked with the runtime's time zone database). */
+export const timeZone = z
+  .string()
+  .min(1)
+  .max(60)
+  .refine((tz) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Choose a time zone from the list');
+
+/** Email domain such as "prepecom.com" (lower case, no @). */
+export const emailDomain = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{3,100}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/, 'Enter a domain like company.com');
+
+/** Suggested company email domain from its name: "Prep Ecom Align" → "prepecomalign.com". */
+export const suggestEmailDomain = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60) || 'company'}.com`;
+
+/** ISO 4217 currency code, e.g. "PKR". */
+export const currencyCode = z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Choose a currency from the list');

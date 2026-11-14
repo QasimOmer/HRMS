@@ -5,7 +5,7 @@ const TZ = 'Asia/Karachi';
 const base = (over: Partial<DayInput> = {}): DayInput => ({
   date: '2026-11-10', // Tuesday
   tz: TZ,
-  schedule: { startTime: '09:00', endTime: '18:00', breakMinutes: 60, graceMinutes: 15, workingDays: [1, 2, 3, 4, 5] },
+  schedule: { startTime: '09:00', endTime: '18:00', breakMinutes: 60, workingDays: [1, 2, 3, 4, 5] },
   punches: [],
   isHoliday: false,
   leave: 'NONE',
@@ -34,14 +34,34 @@ describe('computeDay', () => {
     expect(r.status).toBe('PRESENT');
   });
 
-  it('flags late arrival beyond grace as LATE (yellow)', () => {
+  it('flags late arrival as LATE (yellow) and stores the late minutes', () => {
     const r = computeDay(base({ punches: [p('09:40'), p('18:40')] }));
     expect(r.lateMinutes).toBe(40);
     expect(r.status).toBe('LATE');
   });
 
-  it('tolerates arrival within grace', () => {
-    const r = computeDay(base({ punches: [p('09:10'), p('18:10')] }));
+  it('has no grace period (ATT-03): shift 13:30, check-in 13:52 = 22 minutes late', () => {
+    const r = computeDay(base({ schedule: { startTime: '13:30', endTime: '22:30', breakMinutes: 60, workingDays: [1, 2, 3, 4, 5] }, punches: [p('13:52'), p('22:52')] }));
+    expect(r.lateMinutes).toBe(22);
+    expect(r.status).toBe('LATE');
+  });
+
+  it('OVT-07: 2h of approved overtime reduces the required hours by 2h', () => {
+    const r = computeDay(base({ reducedMinutes: 120, punches: [p('09:00'), p('13:00'), p('14:00'), p('16:00')] }));
+    expect(r.scheduledMinutes).toBe(360);
+    expect(r.workedMinutes).toBe(360);
+    expect(r.earlyLeave).toBe(false);
+    expect(r.status).toBe('PRESENT');
+  });
+
+  it('OVT-07: a shortened day may also start later without counting as late', () => {
+    const r = computeDay(base({ reducedMinutes: 120, punches: [p('11:00'), p('12:30'), p('13:30'), p('18:00')] }));
+    expect(r.lateMinutes).toBe(0);
+    expect(r.status).toBe('PRESENT');
+  });
+
+  it('is on time when checking in exactly at shift start', () => {
+    const r = computeDay(base({ punches: [p('09:00'), p('18:00')] }));
     expect(r.lateMinutes).toBe(0);
     expect(r.status).toBe('PRESENT');
   });

@@ -1,7 +1,16 @@
 // End-to-end smoke test against a running local API (http://localhost:4000).
 // Usage: node scripts/smoke.mjs
 import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+
+// Load PLATFORM_ADMIN_* from .env when not already in the environment.
+if (existsSync('.env')) {
+  for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
+    const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^"|"$/g, '');
+  }
+}
 
 const BASE = process.env.API_URL ?? 'http://localhost:4000/api/v1';
 
@@ -44,21 +53,45 @@ export function expect(cond, msg, extra) {
 
 export const testPassword = () => `Tt1${randomBytes(12).toString('base64url')}`;
 
-async function main() {
+/** Signs in to the platform console (no public sign-up: companies are created by a platform owner). */
+export async function platformClient() {
+  const p = new Client();
+  await p.get('/auth/csrf');
+  const r = await p.post('/platform/login', { email: process.env.PLATFORM_ADMIN_EMAIL, password: process.env.PLATFORM_ADMIN_PASSWORD });
+  if (r.status !== 200) throw new Error(`Platform login failed (${r.status}). Run: npm run platform:admin  (uses PLATFORM_ADMIN_* from .env)`);
+  return p;
+}
+
+/** Creates a company with a Super Admin and returns a Client signed in as that admin. */
+export async function createCompany(platform, { companyName, workspace, adminName, email, password }) {
+  // Test companies use their admin's email domain (e.g. acme-1a2b3c.test).
+  const r = await platform.post('/platform/companies', { companyName, workspace, adminName, email, password, mustChangePassword: false, emailDomain: email.split('@')[1] });
+  expect(r.status === 201, `company ${workspace} created`, r);
   const c = new Client();
   await c.get('/auth/csrf');
+  const l = await c.post('/auth/login', { workspace, email, password });
+  expect(l.status === 200, `company admin of ${workspace} signs in`, l);
+  return c;
+}
+
+async function main() {
   const workspace = `acme-${randomBytes(3).toString('hex')}`;
   const password = testPassword();
   const email = `admin@${workspace}.test`;
 
-  const noCsrf = await c.post('/auth/signup', { companyName: 'Acme', workspace, adminName: 'Ada Admin', email, password }, { csrf: false });
-  expect(noCsrf.status === 403, 'signup without CSRF header is rejected', noCsrf);
+  const anonSignup = new Client();
+  await anonSignup.get('/auth/csrf');
+  const pub = await anonSignup.post('/auth/signup', { companyName: 'Acme', workspace, adminName: 'Ada Admin', email, password });
+  expect(pub.status === 404, 'public sign-up does not exist', pub);
+  expect((await anonSignup.post('/platform/companies', { companyName: 'Acme', workspace, adminName: 'Ada', email, password })).status === 401, 'creating a company needs a Super Admin');
 
-  const s = await c.post('/auth/signup', { companyName: 'Acme Corp', workspace, adminName: 'Ada Admin', email, password });
-  expect(s.status === 201, 'signup creates tenant', s);
+  const platform = await platformClient();
+  const noCsrf = await platform.post('/platform/companies', { companyName: 'Acme', workspace, adminName: 'Ada Admin', email, password }, { csrf: false });
+  expect(noCsrf.status === 403, 'company creation without CSRF header is rejected', noCsrf);
+  const c = await createCompany(platform, { companyName: 'Acme Corp', workspace, adminName: 'Ada Admin', email, password });
 
   const me = await c.get('/auth/me');
-  expect(me.status === 200 && me.data.user.roles.includes('SUPER_ADMIN'), 'me returns super admin', me);
+  expect(me.status === 200 && me.data.user.roles.includes('SUPER_ADMIN'), 'me returns company admin', me);
 
   const anon = new Client();
   const unauth = await anon.get('/auth/me');
@@ -72,6 +105,8 @@ async function main() {
   const refreshed = await anon.post('/auth/refresh');
   expect(refreshed.status === 200, 'refresh rotates session', refreshed);
   console.log(JSON.stringify({ workspace, email }));
+  const { deleteTestCompanies } = await import('./cleanup-test-companies.mjs');
+  await deleteTestCompanies([workspace]);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

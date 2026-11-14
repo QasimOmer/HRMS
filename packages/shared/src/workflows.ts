@@ -47,6 +47,10 @@ export const WORKFLOWS = {
   MEDICAL_CLAIM: [
     { key: 'HR', label: 'HR', permission: PERMISSIONS.MEDICAL_MANAGE },
   ],
+  /** LON-04: employee loan request from their own portal. */
+  LOAN_REQUEST: [
+    { key: 'HR', label: 'HR', permission: PERMISSIONS.LOANS_MANAGE },
+  ],
 } as const satisfies Record<string, readonly WorkflowStep[]>;
 
 export type WorkflowType = keyof typeof WORKFLOWS;

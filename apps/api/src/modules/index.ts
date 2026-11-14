@@ -1,6 +1,12 @@
 import { Module } from '@nestjs/common';
 import { AccessController } from './access/access.controller';
 import { AttendanceController } from './attendance/attendance.controller';
+import { PlatformController } from './platform/platform.controller';
+import { BrandingController } from './platform/branding.controller';
+import { PlatformSettingsService } from './platform/platform-settings.service';
+import { BillingController } from './platform/billing.controller';
+import { BillingService } from './platform/billing.service';
+import { BiometricController } from './attendance/biometric.controller';
 import { AttendanceService } from './attendance/attendance.service';
 import { AuthController } from './auth/auth.controller';
 import { AuthService } from './auth/auth.service';
@@ -22,7 +28,7 @@ import { PerformanceController } from './performance/performance.controller';
 import { SurveysController } from './performance/surveys.controller';
 
 /** Part A – access & roles */
-@Module({ controllers: [AuthController, AccessController], providers: [AuthService], exports: [AuthService] })
+@Module({ controllers: [AuthController, AccessController, PlatformController, BrandingController, BillingController], providers: [AuthService, PlatformSettingsService, BillingService], exports: [AuthService] })
 export class AuthModule {}
 
 /** Part B – employee management */
@@ -35,7 +41,7 @@ export class AuthModule {}
 export class EmployeesModule {}
 
 /** Part C – workforce scheduling & leave */
-@Module({ controllers: [AttendanceController, LeaveController], providers: [AttendanceService, LeaveService], exports: [AttendanceService, LeaveService] })
+@Module({ controllers: [AttendanceController, BiometricController, LeaveController], providers: [AttendanceService, LeaveService], exports: [AttendanceService, LeaveService] })
 export class WorkforceModule {}
 
 /** Part D – payroll */

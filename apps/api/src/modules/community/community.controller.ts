@@ -6,12 +6,15 @@ import {
   communitySettingsSchema,
   grantPostingSchema,
   guidelinesSchema,
+  moderationRemovalSchema,
   postSchema,
+  COMMUNITY_WARNINGS_BEFORE_ACTION,
 } from '@hrms/shared';
 import { and, asc, desc, eq, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { als, currentUser, type AuthUser } from '../../common/context';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
 import { addDays, todayIn } from '../../common/tz';
 import { one, tenantInfo } from '../../common/util';
@@ -19,6 +22,7 @@ import { zp } from '../../common/zod.pipe';
 import { NotificationsService } from '../../core/notifications.service';
 import { DbService } from '../../db/db.service';
 import {
+  communityViolations,
   departments,
   employees,
   guidelineAcceptances,
@@ -37,6 +41,7 @@ const feedQuery = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
+@RequireModule('COMMUNITY')
 @Controller()
 export class CommunityController {
   constructor(
@@ -196,6 +201,8 @@ export class CommunityController {
       comments: r.comments,
       liked: r.liked,
       canDelete: r.p.authorUserId === u.userId || u.permissions.has(P.COMMUNITY_MODERATE),
+      mine: r.p.authorUserId === u.userId,
+      system: !r.p.authorUserId,
     }));
   }
 
@@ -208,18 +215,113 @@ export class CommunityController {
     return one(await this.db.tx.insert(posts).values({ tenantId: u.tenantId, authorUserId: u.userId, type: 'POST', body: body.body, departmentId: body.departmentId ?? null }).returning());
   }
 
-  /** Authors delete their own posts; HR deletes any post that breaks the guidelines (F2). */
+  /** Authors delete their own posts. Removing someone else's post goes through `remove` (with a reason). */
   @Delete('community/posts/:id')
   @Audit('community.post_deleted', 'post')
   async deletePost(@Param('id', ParseUUIDPipe) id: string) {
     const u = currentUser();
     const p = one(await this.db.tx.select().from(posts).where(eq(posts.id, id)), 'Post');
-    if (p.authorUserId !== u.userId && !u.permissions.has(P.COMMUNITY_MODERATE)) throw forbidden();
-    await this.db.tx.update(posts).set({ deletedAt: new Date(), deletedByUserId: u.userId }).where(eq(posts.id, id));
-    if (p.authorUserId && p.authorUserId !== u.userId) {
-      await this.notify.notifyUsers([p.authorUserId], { type: 'community.post_removed', title: 'Your post was removed for not following the Community Guidelines', link: '/community/guidelines' });
+    if (p.authorUserId !== u.userId) {
+      if (!u.permissions.has(P.COMMUNITY_MODERATE)) throw forbidden();
+      // System posts (birthdays) have no author to warn; anything else needs a reason.
+      if (p.authorUserId) throw badRequest("Give a reason when removing someone else's post", 'REASON_REQUIRED');
     }
+    await this.db.tx.update(posts).set({ deletedAt: new Date(), deletedByUserId: u.userId }).where(eq(posts.id, id));
     return { id, deleted: true };
+  }
+
+  /** F2: a moderator (HR, or a Team Lead given moderation) removes a post that breaks the guidelines. */
+  @Post('community/posts/:id/remove')
+  @RequireAny(P.COMMUNITY_MODERATE)
+  @Audit('community.post_removed', 'post')
+  async removePost(@Param('id', ParseUUIDPipe) id: string, @Body(zp(moderationRemovalSchema)) body: z.infer<typeof moderationRemovalSchema>) {
+    const u = currentUser();
+    const p = one(await this.db.tx.select().from(posts).where(and(eq(posts.id, id), isNull(posts.deletedAt))), 'Post');
+    await this.db.tx.update(posts).set({ deletedAt: new Date(), deletedByUserId: u.userId }).where(eq(posts.id, id));
+    const violation = p.authorUserId && p.authorUserId !== u.userId
+      ? await this.recordViolation(p.authorUserId, { postId: id }, body.reason, `${p.title ? `${p.title}: ` : ''}${p.body}`, 'post')
+      : null;
+    return { id, deleted: true, violation };
+  }
+
+  @Post('community/comments/:id/remove')
+  @RequireAny(P.COMMUNITY_MODERATE)
+  @Audit('community.comment_removed', 'post_comment')
+  async removeComment(@Param('id', ParseUUIDPipe) id: string, @Body(zp(moderationRemovalSchema)) body: z.infer<typeof moderationRemovalSchema>) {
+    const u = currentUser();
+    const c = one(await this.db.tx.select().from(postComments).where(and(eq(postComments.id, id), isNull(postComments.deletedAt))), 'Comment');
+    await this.db.tx.update(postComments).set({ deletedAt: new Date() }).where(eq(postComments.id, id));
+    const violation = c.userId !== u.userId ? await this.recordViolation(c.userId, { commentId: id }, body.reason, c.body, 'comment') : null;
+    return { id, deleted: true, violation };
+  }
+
+  /**
+   * Records the breach and tells the author why. 1st and 2nd (within 12 months) are warnings;
+   * the 3rd becomes a disciplinary case: the author is told and HR is alerted to follow up.
+   */
+  private async recordViolation(userId: string, ref: { postId?: string; commentId?: string }, reason: string, excerpt: string, what: 'post' | 'comment') {
+    const u = currentUser();
+    const since = new Date(Date.now() - 365 * 864e5);
+    const [{ n }] = (await this.db.tx.select({ n: sql<number>`count(*)::int` }).from(communityViolations)
+      .where(and(eq(communityViolations.userId, userId), sql`${communityViolations.createdAt} >= ${since}`))) as [{ n: number }];
+    const level = n + 1;
+    await this.db.tx.insert(communityViolations).values({ tenantId: u.tenantId, userId, ...ref, reason, level, removedByUserId: u.userId, contentExcerpt: excerpt.slice(0, 300) });
+    const max = COMMUNITY_WARNINGS_BEFORE_ACTION;
+    if (level <= max) {
+      await this.notify.notifyUsers([userId], {
+        type: 'community.warning',
+        title: `Warning ${level} of ${max}: your ${what} was removed`,
+        body: `Reason: ${reason}. ${level === max ? 'This is your final warning. One more breach of the Community Guidelines leads to disciplinary action.' : `After ${max} warnings, the next breach leads to disciplinary action.`}`,
+        link: '/community/guidelines',
+        email: true,
+      });
+    } else {
+      const [who] = await this.db.tx.select({ name: employees.fullName, email: users.email }).from(users).leftJoin(employees, eq(employees.id, users.employeeId)).where(eq(users.id, userId));
+      await this.notify.notifyUsers([userId], {
+        type: 'community.disciplinary',
+        title: `Disciplinary action: your ${what} was removed again`,
+        body: `Reason: ${reason}. You have broken the Community Guidelines ${level} times in 12 months after ${max} warnings, so HR will follow up with disciplinary action.`,
+        link: '/community/guidelines',
+        email: true,
+      });
+      await this.notify.notifyPermission(P.EMPLOYEES_MANAGE, {
+        type: 'community.disciplinary_case',
+        title: `${who?.name ?? who?.email ?? 'An employee'} needs disciplinary action (${level} community violations)`,
+        body: `Latest: ${reason}`,
+        link: '/community/moderation',
+        email: true,
+      });
+    }
+    return { level, warning: level <= max, disciplinary: level > max };
+  }
+
+  /** Moderation log for HR and moderators. */
+  @Get('community/violations')
+  @RequireAny(P.COMMUNITY_MODERATE, P.EMPLOYEES_MANAGE)
+  async violations() {
+    const remover = alias(users, 'remover');
+    const removerEmp = alias(employees, 'remover_emp');
+    const rows = await this.db.tx
+      .select({ v: communityViolations, name: employees.fullName, email: users.email, removedBy: removerEmp.fullName })
+      .from(communityViolations)
+      .innerJoin(users, eq(users.id, communityViolations.userId))
+      .leftJoin(employees, eq(employees.id, users.employeeId))
+      .leftJoin(remover, eq(remover.id, communityViolations.removedByUserId))
+      .leftJoin(removerEmp, eq(removerEmp.id, remover.employeeId))
+      .orderBy(desc(communityViolations.createdAt))
+      .limit(300);
+    return rows.map((r) => ({ ...r.v, name: r.name ?? r.email, removedBy: r.removedBy, disciplinary: r.v.level > COMMUNITY_WARNINGS_BEFORE_ACTION }));
+  }
+
+  /** The signed-in person's own standing (shown on the guidelines page). */
+  @Get('community/my-standing')
+  async myStanding() {
+    const since = new Date(Date.now() - 365 * 864e5);
+    const rows = await this.db.tx.select({ reason: communityViolations.reason, level: communityViolations.level, createdAt: communityViolations.createdAt })
+      .from(communityViolations)
+      .where(and(eq(communityViolations.userId, currentUser().userId), sql`${communityViolations.createdAt} >= ${since}`))
+      .orderBy(desc(communityViolations.createdAt));
+    return { count: rows.length, warningsAllowed: COMMUNITY_WARNINGS_BEFORE_ACTION, items: rows };
   }
 
   private async assertEngagement() {
@@ -254,7 +356,7 @@ export class CommunityController {
       .leftJoin(employees, eq(employees.id, users.employeeId))
       .where(and(eq(postComments.postId, id), isNull(postComments.deletedAt)))
       .orderBy(asc(postComments.createdAt));
-    return rows.map((r) => ({ ...r.c, fullName: r.fullName, avatarFileId: r.avatarFileId, canDelete: r.c.userId === u.userId || u.permissions.has(P.COMMUNITY_MODERATE) }));
+    return rows.map((r) => ({ ...r.c, fullName: r.fullName, avatarFileId: r.avatarFileId, canDelete: r.c.userId === u.userId || u.permissions.has(P.COMMUNITY_MODERATE), mine: r.c.userId === u.userId }));
   }
 
   @Post('community/posts/:id/comments')
@@ -273,7 +375,10 @@ export class CommunityController {
   async deleteComment(@Param('id', ParseUUIDPipe) id: string) {
     const u = currentUser();
     const c = one(await this.db.tx.select().from(postComments).where(eq(postComments.id, id)), 'Comment');
-    if (c.userId !== u.userId && !u.permissions.has(P.COMMUNITY_MODERATE)) throw forbidden();
+    if (c.userId !== u.userId) {
+      if (!u.permissions.has(P.COMMUNITY_MODERATE)) throw forbidden();
+      throw badRequest("Give a reason when removing someone else's comment", 'REASON_REQUIRED');
+    }
     await this.db.tx.update(postComments).set({ deletedAt: new Date() }).where(eq(postComments.id, id));
     return { id, deleted: true };
   }

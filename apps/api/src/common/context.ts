@@ -13,6 +13,12 @@ export interface AuthUser {
   /** Team ids this user leads (Team Lead data scope, F4). */
   ledTeamIds: string[];
   canPost: boolean;
+  /** Feature modules in the company's plan (permissions outside them are removed). */
+  modules: string[];
+  /** UNPAID locks the workspace to Billing; DUE shows a reminder. */
+  billingStatus: 'PAID' | 'DUE' | 'UNPAID';
+  /** The public read-only demo company. */
+  isDemo: boolean;
 }
 
 export interface RequestContext {

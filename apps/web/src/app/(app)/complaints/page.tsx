@@ -2,7 +2,7 @@
 
 import { COMPLAINT_CATEGORIES, COMPLAINT_STATUSES, PERMISSIONS as P } from '@hrms/shared';
 import { Copy, Lock, Paperclip, Search, ShieldCheck } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,7 @@ import { Badge, Card, CardBody, CardHeader, KeyValue, PageHeader, StatusBadge } 
 import { Field, Input, Select, Textarea } from '@/components/ui/form';
 import { Dialog, Tabs } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
+import { FileUpload } from '@/components/ui/file-upload';
 import { api, downloadFile } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { date, humanize } from '@/lib/format';
@@ -21,7 +22,7 @@ function Submit() {
   const [v, setV] = useState({ category: 'OTHER', description: '' });
   const [code, setCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const files = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [track, setTrack] = useState('');
   const [tracked, setTracked] = useState<{ category: string; status: string; resolutionNote: string | null; submittedOn: string } | null>(null);
 
@@ -29,13 +30,13 @@ function Submit() {
     const fd = new FormData();
     fd.set('category', v.category);
     fd.set('description', v.description);
-    for (const f of Array.from(files.current?.files ?? [])) fd.append('files', f);
+    for (const f of files) fd.append('files', f);
     setBusy(true);
     try {
       const r = await api.post<{ trackingCode: string }>('/complaints', fd);
       setCode(r.trackingCode);
       setV({ category: 'OTHER', description: '' });
-      if (files.current) files.current.value = '';
+      setFiles([]);
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -58,8 +59,8 @@ function Submit() {
         <CardBody className="space-y-4">
           <div className="flex gap-3 rounded-md bg-info-soft p-3 text-sm text-info"><ShieldCheck className="h-5 w-5 shrink-0" aria-hidden /><p>Only authorised HR staff can read complaints. Avoid including details that identify you unless you want to.</p></div>
           <Field label="Category">{(a) => <Select {...a} value={v.category} onChange={(e) => setV({ ...v, category: e.target.value })}>{COMPLAINT_CATEGORIES.map((c) => <option key={c} value={c}>{humanize(c)}</option>)}</Select>}</Field>
-          <Field label="What happened?" required hint="At least 20 characters">{(a) => <Textarea {...a} rows={6} value={v.description} onChange={(e) => setV({ ...v, description: e.target.value })} />}</Field>
-          <Field label="Evidence (optional)" hint="Images or PDFs, up to 5 files">{(a) => <Input {...a} ref={files} type="file" multiple accept=".pdf,image/*" className="pt-1.5" />}</Field>
+          <Field label="What happened?" required hint={`${v.description.trim().length}/20 characters minimum`}>{(a) => <Textarea {...a} rows={6} value={v.description} onChange={(e) => setV({ ...v, description: e.target.value })} />}</Field>
+          <Field label="Evidence (optional)" hint="Photos or PDFs that support your complaint. Click a file to preview it in a new window.">{(a) => <FileUpload {...a} value={files} onChange={setFiles} multiple maxFiles={5} accept=".pdf,image/*" label="Upload evidence" />}</Field>
           <Button loading={busy} disabled={v.description.trim().length < 20} onClick={submit}><Lock className="h-4 w-4" /> Submit anonymously</Button>
         </CardBody>
       </Card>

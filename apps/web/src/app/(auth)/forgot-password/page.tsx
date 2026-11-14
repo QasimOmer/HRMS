@@ -11,7 +11,7 @@ import { fieldError, useZodForm } from '@/lib/form';
 
 export default function ForgotPasswordPage() {
   const [sent, setSent] = useState(false);
-  const form = useZodForm(forgotPasswordSchema, { workspace: '', email: '' });
+  const form = useZodForm(forgotPasswordSchema, { email: '' });
   const onSubmit = form.handleSubmit(async (v) => {
     await api.post('/auth/forgot-password', v).catch(() => undefined);
     setSent(true); // same response either way – no account enumeration
@@ -34,9 +34,6 @@ export default function ForgotPasswordPage() {
       <h1 className="text-2xl font-semibold tracking-tight">Reset password</h1>
       <p className="mt-1 text-sm text-muted-foreground">We'll email you a secure reset link.</p>
       <form onSubmit={onSubmit} className="mt-8 space-y-4" noValidate>
-        <Field label="Workspace" error={fieldError(form, 'workspace')}>
-          {(a) => <Input {...a} autoCapitalize="none" {...form.register('workspace')} />}
-        </Field>
         <Field label="Work email" error={fieldError(form, 'email')}>
           {(a) => <Input {...a} type="email" autoComplete="username" {...form.register('email')} />}
         </Field>

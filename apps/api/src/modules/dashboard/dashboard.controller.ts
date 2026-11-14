@@ -39,6 +39,7 @@ const TABLES: Record<Exclude<WorkflowType, 'PAYROLL'>, { table: string; label: s
   RESIGNATION: { table: 'resignations', label: 'Resignation', link: '/resignations' },
   TEAM_TRANSFER: { table: 'team_transfer_requests', label: 'Team transfer', link: '/teams' },
   MEDICAL_CLAIM: { table: 'medical_claims', label: 'Medical claim', link: '/medical' },
+  LOAN_REQUEST: { table: 'loans', label: 'Loan request', link: '/loans' },
 };
 
 @Controller()
@@ -231,7 +232,23 @@ export class DashboardController {
         .leftJoin(teamMembers, eq(teamMembers.employeeId, employees.id))
         .where(and(eq(employees.employmentStatus, 'ACTIVE'), isNull(teamMembers.teamId)));
       const s = (k: string) => byStatus.find((b) => b.status === k)?.n ?? 0;
+      // 6-month trends for the charts: headcount at month end, joiners and leavers; payroll cost per run.
+      const workforceTrend = (
+        await tx.execute(sql`
+          select to_char(m, 'YYYY-MM') as month,
+            (select count(*) from employees e where e.joining_date <= (m + interval '1 month' - interval '1 day')::date
+               and (e.exit_date is null or e.exit_date > (m + interval '1 month' - interval '1 day')::date))::int as headcount,
+            (select count(*) from employees e where date_trunc('month', e.joining_date) = m)::int as joined,
+            (select count(*) from employees e where e.exit_date is not null and date_trunc('month', e.exit_date) = m)::int as "left"
+          from generate_series(date_trunc('month', ${today}::date) - interval '5 months', date_trunc('month', ${today}::date), interval '1 month') m
+          order by m`)
+      ).rows as { month: string; headcount: number; joined: number; left: number }[];
+      const payrollTrend = u.permissions.has(P.PAYROLL_READ_ALL)
+        ? (await tx.select({ period: payrollRuns.period, totalNet: payrollRuns.totalNet, status: payrollRuns.status }).from(payrollRuns).orderBy(desc(payrollRuns.period)).limit(6)).reverse()
+        : [];
       out.organisation = {
+        workforceTrend,
+        payrollTrend,
         headcount: { total: byStatus.reduce((a, b) => a + b.n, 0), active: s('ACTIVE'), inactive: s('INACTIVE'), resigned: s('RESIGNED'), terminated: s('TERMINATED') },
         todayAttendance: Object.fromEntries(todayAll.map((x) => [x.status, x.n])),
         byDepartment: byDept,
@@ -256,7 +273,8 @@ export class DashboardController {
         })
         .from(users);
       const [deptCount] = await tx.select({ n: sql<number>`count(*)::int` }).from(departments).where(eq(departments.isActive, true));
-      const recentAudit = await tx.select().from(auditLogs).orderBy(desc(auditLogs.id)).limit(8);
+      const recentAudit = (await tx.select({ a: auditLogs, email: users.email }).from(auditLogs).leftJoin(users, eq(users.id, auditLogs.actorUserId)).orderBy(desc(auditLogs.id)).limit(8))
+        .map((r) => ({ ...r.a, actorLabel: r.a.actorLabel ?? r.email ?? null }));
       out.system = { users: userStats, departments: deptCount?.n ?? 0, recentAudit };
     }
 

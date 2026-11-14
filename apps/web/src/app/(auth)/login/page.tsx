@@ -8,55 +8,83 @@ import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
 import { api, ApiError } from '@/lib/api';
 import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
+import { SITE } from '@/lib/site';
+import { CompanyLogo } from '@/components/brand';
 
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const [error, setError] = useState<string | null>(null);
-  const form = useZodForm(loginSchema, { workspace: '', email: '', password: '' });
-
+  const [choices, setChoices] = useState<{ slug: string; name: string }[] | null>(null);
+  const form = useZodForm(loginSchema, { email: '', password: '' });
+  // Rate limit: seconds until signing in is allowed again (counts down live).
+  const [wait, setWait] = useState(0);
   useEffect(() => {
-    try {
-      const ws = localStorage.getItem('hrms-workspace');
-      if (ws) form.setValue('workspace', ws);
-    } catch {
-      /* ignore */
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (wait <= 0) return;
+    const t = setTimeout(() => setWait((w) => w - 1), 1000);
+    return () => clearTimeout(t);
+  }, [wait]);
 
-  const onSubmit = form.handleSubmit(async (values) => {
+  const signIn = async (values: { email: string; password: string; workspace?: string }) => {
     setError(null);
     try {
       await api.post('/auth/login', values);
-      try {
-        localStorage.setItem('hrms-workspace', values.workspace);
-      } catch {
-        /* ignore */
-      }
       const next = params.get('next');
       // Only allow same-site relative redirects (no open redirect).
       router.replace(next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard');
     } catch (e) {
+      if (e instanceof ApiError && e.code === 'CHOOSE_WORKSPACE') {
+        setChoices((e.details?.workspaces as { slug: string; name: string }[]) ?? []);
+        return;
+      }
+      if (e instanceof ApiError && e.code === 'TOO_MANY_REQUESTS') {
+        setWait(Number(e.details?.retryAfter) || 60);
+        return;
+      }
       if (!applyServerErrors(form, e)) setError(e instanceof ApiError ? e.message : 'Could not sign in');
     }
-  });
+  };
+  const onSubmit = form.handleSubmit((v) => signIn(v));
+
+  if (choices) {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold tracking-tight">Choose a company</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Your email is used in more than one company. Which one do you want to open?</p>
+        <ul className="mt-6 space-y-2">
+          {choices.map((c) => (
+            <li key={c.slug}>
+              <button type="button" disabled={form.formState.isSubmitting} onClick={() => signIn({ ...form.getValues(), workspace: c.slug })}
+                className="flex w-full items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:border-primary/60 hover:bg-primary-soft/40">
+                <CompanyLogo name={c.name} />
+                <span className="min-w-0"><span className="block truncate font-medium">{c.name}</span><span className="block text-xs text-muted-foreground">{c.slug}</span></span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        {error && <p role="alert" className="mt-4 text-sm text-danger">{error}</p>}
+        <button type="button" className="mt-6 text-sm text-primary hover:underline" onClick={() => setChoices(null)}>Back</button>
+      </>
+    );
+  }
 
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
-      <p className="mt-1 text-sm text-muted-foreground">Welcome back. Enter your company workspace and credentials.</p>
-      <form onSubmit={onSubmit} className="mt-8 space-y-4" noValidate>
-        {error && (
+      <p className="mt-1 text-sm text-muted-foreground">Welcome back. Use your work email and password.</p>
+      <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
+        {wait > 0 ? (
+          <div role="alert" className="flex items-center gap-3 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
+            <span className="font-mono text-lg font-semibold tabular-nums">{Math.floor(wait / 60)}:{String(wait % 60).padStart(2, '0')}</span>
+            <span>Too many sign-in attempts from this network. You can try again when the timer ends.</span>
+          </div>
+        ) : error && (
           <div role="alert" className="rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
             {error}
           </div>
         )}
-        <Field label="Workspace" error={fieldError(form, 'workspace')} hint="Your company's workspace name, e.g. acme">
-          {(a) => <Input {...a} autoComplete="organization" autoCapitalize="none" {...form.register('workspace')} />}
-        </Field>
         <Field label="Work email" error={fieldError(form, 'email')}>
-          {(a) => <Input {...a} type="email" autoComplete="username" {...form.register('email')} />}
+          {(a) => <Input {...a} type="email" autoComplete="username" autoFocus {...form.register('email')} />}
         </Field>
         <Field label="Password" error={fieldError(form, 'password')}>
           {(a) => <Input {...a} type="password" autoComplete="current-password" {...form.register('password')} />}
@@ -66,15 +94,12 @@ function LoginForm() {
             Forgot password?
           </Link>
         </div>
-        <Button type="submit" className="w-full" size="lg" loading={form.formState.isSubmitting}>
-          Sign in
+        <Button type="submit" className="w-full" size="lg" loading={form.formState.isSubmitting} disabled={wait > 0}>
+          {wait > 0 ? `Try again in ${wait}s` : 'Sign in'}
         </Button>
       </form>
-      <p className="mt-8 text-center text-sm text-muted-foreground">
-        New company?{' '}
-        <Link href="/signup" className="font-medium text-primary hover:underline">
-          Create a workspace
-        </Link>
+      <p className="mt-6 text-center text-sm text-muted-foreground">
+        New company? <Link href="/signup" className="font-medium text-primary hover:underline">Create your workspace</Link> or <Link href="/demo" className="font-medium text-primary hover:underline">try the demo</Link>.
       </p>
     </>
   );

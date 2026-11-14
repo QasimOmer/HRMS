@@ -16,6 +16,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { date, humanize } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
 
 interface Q { id: string; type: (typeof SURVEY_QUESTION_TYPES)[number]; label: string; options?: string[]; required: boolean }
 interface Survey { id: string; title: string; description: string | null; kind: string; audience: string; audienceId: string | null; anonymous: boolean; questions: Q[]; status: string; createdAt: string; responses?: number }
@@ -140,6 +141,7 @@ export default function SurveysPage() {
                     {s.status !== 'OPEN' && <Button size="sm" onClick={() => openS.mutate(s.id)}>Open</Button>}
                     {s.status === 'OPEN' && <Button size="sm" variant="outline" onClick={() => closeS.mutate(s.id)}>Close</Button>}
                     <Link href={`/surveys/${s.id}/results`}><Button size="sm" variant="ghost"><BarChart3 className="h-3.5 w-3.5" /> Results</Button></Link>
+                    <DeleteButton iconOnly path={`/surveys/${s.id}`} what={`the survey "${s.title}"`} invalidate={['/surveys']} detail="The survey and all its responses are deleted. This cannot be undone." />
                   </div>
                 ) },
               ]} />

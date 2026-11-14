@@ -14,12 +14,12 @@ import {
   type TenantSettingsInput,
   type WorkScheduleInput,
 } from '@hrms/shared';
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { currentUser } from '../../common/context';
 import { Audit, RequireAny } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
-import { inIds, one } from '../../common/util';
+import { inIds, one, requireDelete, assertUnused, countWhere, deleteSafely } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { ApprovalsService } from '../../core/approvals.service';
 import { NotificationsService } from '../../core/notifications.service';
@@ -34,6 +34,8 @@ import {
   tenants,
   userRoles,
   workSchedules,
+  employeePositions,
+  foodAllowanceRules,
 } from '../../db/schema';
 
 const levelUpdate = z.object({
@@ -58,7 +60,7 @@ export class OrgController {
   @Get('settings')
   async settings() {
     const [t] = await this.db.tx.select().from(tenants).where(eq(tenants.id, currentUser().tenantId));
-    return { name: t!.name, slug: t!.slug, timezone: t!.timezone, currency: t!.currency, settings: t!.settings };
+    return { name: t!.name, slug: t!.slug, timezone: t!.timezone, currency: t!.currency, logoFileId: t!.logoFileId, emailDomain: t!.emailDomain, settings: t!.settings };
   }
 
   @Patch('settings')
@@ -67,8 +69,9 @@ export class OrgController {
   async updateSettings(@Body(zp(tenantSettingsSchema)) body: TenantSettingsInput) {
     const user = currentUser();
     const full = user.permissions.has(P.TENANT_SETTINGS);
-    // Operations may only toggle the directory join-date display (B5).
-    if (!full && Object.keys(body).some((k) => k !== 'directoryShowJoinDate')) throw forbidden();
+    // Operations may only toggle the directory join-date display (B5) and set the session timeout (SEC-03).
+    const OPS_KEYS = ['directoryShowJoinDate', 'sessionIdleMinutes'];
+    if (!full && Object.keys(body).some((k) => !OPS_KEYS.includes(k))) throw forbidden();
     const tx = this.db.tx;
     const [t] = await tx.select().from(tenants).where(eq(tenants.id, user.tenantId));
     const { name, timezone, currency, ...rest } = body;
@@ -105,6 +108,22 @@ export class OrgController {
     return one(await tx.update(workSchedules).set(body).where(eq(workSchedules.id, id)).returning(), 'Work schedule');
   }
 
+  @Delete('work-schedules/:id')
+  @RequireAny(P.TENANT_SETTINGS, P.ATTENDANCE_MANAGE)
+  @Audit('work_schedule.deleted', 'work_schedule')
+  async removeSchedule(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    const ws = one(await tx.select().from(workSchedules).where(eq(workSchedules.id, id)), 'Schedule');
+    if (ws.isDefault) throw badRequest('Make another schedule the default before deleting this one', 'IS_DEFAULT');
+    assertUnused('This schedule', [
+      [await countWhere(tx, employees, eq(employees.workScheduleId, id)), 'employee(s)'],
+      [await countWhere(tx, departments, eq(departments.workScheduleId, id)), 'department(s)'],
+    ]);
+    await tx.delete(workSchedules).where(eq(workSchedules.id, id));
+    return { id, deleted: true };
+  }
+
   /* ---------------- Departments (B7) ---------------- */
 
   @Get('departments')
@@ -119,6 +138,7 @@ export class OrgController {
         headName: employees.fullName,
         foodAllowanceEnabled: departments.foodAllowanceEnabled,
         paidOvertimeEnabled: departments.paidOvertimeEnabled,
+        workScheduleId: departments.workScheduleId,
         isActive: departments.isActive,
       })
       .from(departments)
@@ -153,6 +173,25 @@ export class OrgController {
   @Audit('department.updated', 'department')
   async updateDepartment(@Param('id', ParseUUIDPipe) id: string, @Body(zp(departmentSchema)) body: DepartmentInput) {
     return one(await this.db.tx.update(departments).set(body).where(eq(departments.id, id)).returning(), 'Department');
+  }
+
+  /** Only a department nobody has ever belonged to can be deleted (its unused levels go with it). */
+  @Delete('departments/:id')
+  @RequireAny(P.DEPARTMENTS_MANAGE)
+  @Audit('department.deleted', 'department')
+  async removeDepartment(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    one(await tx.select({ id: departments.id }).from(departments).where(eq(departments.id, id)), 'Department');
+    assertUnused('This department', [
+      [await countWhere(tx, employees, eq(employees.departmentId, id)), 'employee(s)'],
+      [await countWhere(tx, employeePositions, eq(employeePositions.departmentId, id)), 'past position(s)'],
+      [await countWhere(tx, teams, eq(teams.departmentId, id)), 'team(s)'],
+    ]);
+    await tx.delete(foodAllowanceRules).where(eq(foodAllowanceRules.departmentId, id));
+    await tx.delete(levels).where(eq(levels.departmentId, id));
+    await deleteSafely(tx, 'This department', () => tx.delete(departments).where(eq(departments.id, id)));
+    return { id, deleted: true };
   }
 
   /* ---------------- Levels & salary bands (B7) ---------------- */
@@ -203,6 +242,21 @@ export class OrgController {
     for (const [i, id] of body.levelIds.entries()) await tx.update(levels).set({ rank: 1000 + i }).where(eq(levels.id, id));
     for (const [i, id] of body.levelIds.entries()) await tx.update(levels).set({ rank: i }).where(eq(levels.id, id));
     return { ok: true };
+  }
+
+  @Delete('levels/:id')
+  @RequireAny(P.DEPARTMENTS_MANAGE)
+  @Audit('level.deleted', 'level')
+  async removeLevel(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    one(await tx.select({ id: levels.id }).from(levels).where(eq(levels.id, id)), 'Level');
+    assertUnused('This level', [
+      [await countWhere(tx, employees, eq(employees.levelId, id)), 'employee(s)'],
+      [await countWhere(tx, employeePositions, eq(employeePositions.levelId, id)), 'past position(s)'],
+    ]);
+    await tx.delete(levels).where(eq(levels.id, id));
+    return { id, deleted: true };
   }
 
   /* ---------------- Teams (A1) ---------------- */
@@ -258,6 +312,19 @@ export class OrgController {
     if (user.permissions.has(P.TEAMS_MANAGE)) return;
     if (user.permissions.has(P.TEAMS_MANAGE_OWN) && user.ledTeamIds.includes(teamId)) return;
     throw forbidden('You can only manage your own team');
+  }
+
+  @Delete('teams/:id')
+  @RequireAny(P.TEAMS_MANAGE)
+  @Audit('team.deleted', 'team')
+  async removeTeam(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    one(await tx.select({ id: teams.id }).from(teams).where(eq(teams.id, id)), 'Team');
+    // Members simply become unassigned; transfer history is kept, so teams with transfers can only be deactivated.
+    assertUnused('This team', [[await countWhere(tx, teamTransferRequests, or(eq(teamTransferRequests.fromTeamId, id), eq(teamTransferRequests.toTeamId, id))), 'transfer request(s)']]);
+    await tx.delete(teams).where(eq(teams.id, id));
+    return { id, deleted: true };
   }
 
   @Get('teams/:id/members')

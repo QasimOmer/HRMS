@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
@@ -11,6 +11,7 @@ export type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
 @Injectable()
 export class DbService implements OnModuleDestroy {
+  private readonly logger = new Logger('Database');
   readonly pool: Pool;
   /** Raw handle – only for platform tables (tenants, jobs). Tenant data must go through `tx`. */
   readonly root: Database;
@@ -18,10 +19,13 @@ export class DbService implements OnModuleDestroy {
   constructor() {
     this.pool = new Pool({
       connectionString: config().DATABASE_URL,
-      max: 20,
+      max: config().DB_POOL_MAX,
       idleTimeoutMillis: 30_000,
       statement_timeout: 30_000,
     });
+    // Hosted Postgres (Neon, Supabase, …) closes idle connections. Without a listener, that 'error'
+    // event is unhandled and crashes the whole process; the pool replaces the client on its own.
+    this.pool.on('error', (err) => this.logger.warn(`Idle database connection dropped: ${err.message}`));
     this.root = drizzle(this.pool, { schema, casing: 'snake_case' });
   }
 
@@ -39,7 +43,9 @@ export class DbService implements OnModuleDestroy {
   async inTenant<T>(tenantId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
     const store = als.getStore();
     if (store?.tx && store.tenantId === tenantId) return fn(store.tx);
+    const role = await this.restrictedRole();
     return this.root.transaction(async (tx) => {
+      if (role) await tx.execute(sql.raw(`set local role "${role}"`));
       await tx.execute(sql`select set_config('app.tenant_id', ${tenantId}, true)`);
       if (store) {
         const prev = { tx: store.tx, tenantId: store.tenantId };
@@ -54,6 +60,32 @@ export class DbService implements OnModuleDestroy {
       }
       return als.run({ tenantId, tx }, () => fn(tx));
     });
+  }
+
+  private rlsRole?: Promise<string | null>;
+
+  /**
+   * When the app's login can skip row-level security (superuser or BYPASSRLS, typical for one-login hosted
+   * databases), company requests switch to the restricted "hrms_rls" role made by the migrations, so each
+   * company only ever sees its own rows. A normal app login (like the local hrms_app) needs no switch.
+   */
+  private restrictedRole(): Promise<string | null> {
+    this.rlsRole ??= this.pool
+      .query<{ rolname: string }>(
+        `select r.rolname from pg_roles r join pg_roles me on me.rolname = current_user
+         where r.rolname = 'hrms_rls' and (me.rolsuper or me.rolbypassrls) and pg_has_role(current_user, r.oid, 'MEMBER')`,
+      )
+      .then((r) => {
+        const role = r.rows[0]?.rolname ?? null;
+        if (role) this.logger.log(`Company requests run as the restricted role "${role}"`);
+        return role;
+      })
+      .catch((e) => {
+        this.rlsRole = undefined; // try again on the next request
+        this.logger.warn(`Could not check the database role: ${(e as Error).message}`);
+        return null;
+      });
+    return this.rlsRole;
   }
 
   async onModuleDestroy() {

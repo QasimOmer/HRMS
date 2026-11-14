@@ -1,7 +1,9 @@
 'use client';
 
 import { AlertTriangle, CalendarClock, Clock, FileText, HandCoins, Inbox, LifeBuoy, Megaphone, Receipt, Timer, UserCheck, Users, Utensils } from 'lucide-react';
+import { ATTENDANCE_COLORS as C, auditActionLabel } from '@hrms/shared';
 import Link from 'next/link';
+import { Bars, Donut } from '@/components/ui/charts';
 import { Badge, BarList, Card, CardBody, CardHeader, EmptyState, ErrorState, Progress, Skeleton, Stat, StatusBadge } from '@/components/ui/display';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth';
@@ -36,6 +38,8 @@ interface Dash {
     openSurveys: number;
   };
   organisation?: {
+    workforceTrend: { month: string; headcount: number; joined: number; left: number }[];
+    payrollTrend: { period: string; totalNet: number; status: string }[];
     headcount: { total: number; active: number; inactive: number; resigned: number; terminated: number };
     todayAttendance: Record<string, number>;
     byDepartment: { name: string; n: number }[];
@@ -60,7 +64,7 @@ function greeting() {
 }
 
 export default function DashboardPage() {
-  const { me } = useAuth();
+  const { me, hasModule: has } = useAuth();
   const { data: d, isLoading, error } = useApi<Dash>('/dashboard');
 
   if (error) return <ErrorState message={error.message} />;
@@ -105,40 +109,38 @@ export default function DashboardPage() {
             My overview
           </h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Stat
+            {has('ATTENDANCE') && <><Stat
               label="Today"
               icon={Clock}
               value={e.today ? <StatusBadge status={e.today.status} /> : <span className="text-base text-muted-foreground">Not checked in</span>}
               hint={e.today?.checkIn ? `In ${time(e.today.checkIn)}${e.today.checkOut ? ` · Out ${time(e.today.checkOut)}` : ''}` : 'Attendance from biometric device'}
             />
             <Stat label={`Hours in ${monthLabel(d.month).split(' ')[0]}`} icon={Timer} value={hours(e.attendance.worked)} hint={`of ${hours(e.attendance.scheduled)} scheduled · ${hours(e.attendance.overtime)} overtime`} />
-            <Stat label="Overtime balance" icon={HandCoins} tone="success" value={hours(e.overtime.availableMinutes)} hint="Available for compensation" />
-            <Stat label="Last salary" icon={Receipt} tone="info" value={e.lastPayslip ? money(e.lastPayslip.net, cur) : '—'} hint={e.lastPayslip ? monthLabel(e.lastPayslip.period) : 'No slips yet'} />
+            <Stat label="Overtime balance" icon={HandCoins} tone="success" value={hours(e.overtime.availableMinutes)} hint="Available for compensation" /></>}
+            {has('PAYROLL') && <Stat label="Last salary" icon={Receipt} tone="info" value={e.lastPayslip ? money(e.lastPayslip.net, cur) : '—'} hint={e.lastPayslip ? monthLabel(e.lastPayslip.period) : 'No slips yet'} />}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="lg:col-span-2">
+            {has('ATTENDANCE') && <Card className="lg:col-span-2">
               <CardHeader title="Attendance this month" action={<Link className="text-xs text-primary hover:underline" href="/attendance">View attendance</Link>} />
               <CardBody>
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                  {[
-                    ['Present', e.attendance.present, 'text-success'],
-                    ['Late', e.attendance.late, 'text-warning'],
-                    ['Absent', e.attendance.absent, 'text-danger'],
-                    ['On leave', e.attendance.leave, 'text-info'],
-                  ].map(([l, v, c]) => (
-                    <div key={l as string}>
-                      <p className="text-xs text-muted-foreground">{l}</p>
-                      <p className={`text-2xl font-semibold tabular-nums ${c}`}>{v}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
+                <Donut
+                  className="justify-center sm:justify-start"
+                  center={`${e.attendance.present + e.attendance.late + e.attendance.absent + e.attendance.leave}`}
+                  sub="days"
+                  slices={[
+                    { label: 'Present', value: e.attendance.present, color: C.PRESENT },
+                    { label: 'Late', value: e.attendance.late, color: C.LATE },
+                    { label: 'Absent', value: e.attendance.absent, color: C.ABSENT },
+                    { label: 'On leave', value: e.attendance.leave, color: C.ON_LEAVE },
+                  ]}
+                />
+                {has('PAYROLL') && <div className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
                   <Utensils className="h-4 w-4" aria-hidden /> {e.attendance.foodDays} days eligible for food allowance (if enabled for your department)
-                </div>
+                </div>}
               </CardBody>
-            </Card>
-            <Card>
+            </Card>}
+            {has('LEAVE') && <Card>
               <CardHeader title="Leave balance" action={<Link className="text-xs text-primary hover:underline" href="/leave">Apply</Link>} />
               <CardBody className="space-y-3">
                 {e.leaveBalances.map((b) => (
@@ -154,11 +156,11 @@ export default function DashboardPage() {
                   </div>
                 ))}
               </CardBody>
-            </Card>
+            </Card>}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <Card>
+            {has('PERFORMANCE') && <Card>
               <CardHeader title="KPI progress" description={monthLabel(d.month)} action={<Link className="text-xs text-primary hover:underline" href="/kpi">Submit</Link>} />
               <CardBody className="space-y-3">
                 {!e.kpi.length && <p className="text-sm text-muted-foreground">No targets assigned this month.</p>}
@@ -172,7 +174,7 @@ export default function DashboardPage() {
                   </div>
                 ))}
               </CardBody>
-            </Card>
+            </Card>}
             <Card>
               <CardHeader title="Coming up" action={<Link className="text-xs text-primary hover:underline" href="/calendar">Calendar</Link>} />
               <CardBody className="space-y-2.5">
@@ -194,12 +196,12 @@ export default function DashboardPage() {
             <Card>
               <CardHeader title="Quick links" />
               <CardBody className="grid grid-cols-2 gap-2">
-                {[
-                  ['/profile?tab=documents', 'HR documents', FileText, e.hrDocuments],
-                  ['/queries', 'My queries', LifeBuoy, e.openQueries],
-                  ['/payslips', 'Salary slips', Receipt, null],
-                  ['/complaints', 'Report concern', AlertTriangle, null],
-                ].map(([href, label, Icon, n]) => {
+                {([
+                  ['/profile?tab=documents', 'HR documents', FileText, e.hrDocuments, null],
+                  ['/queries', 'My queries', LifeBuoy, e.openQueries, 'COMPLIANCE'],
+                  ['/payslips', 'Salary slips', Receipt, null, 'PAYROLL'],
+                  ['/complaints', 'Report concern', AlertTriangle, null, 'COMPLIANCE'],
+                ] as const).filter((x) => !x[4] || has(x[4])).map(([href, label, Icon, n]) => {
                   const I = Icon as typeof FileText;
                   return (
                     <Link key={href as string} href={href as string} className="flex flex-col gap-1 rounded-md border p-3 text-sm hover:bg-muted">
@@ -221,11 +223,23 @@ export default function DashboardPage() {
           <h2 id="team-heading" className="text-lg font-semibold">My team</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Team members" icon={Users} value={d.teamLead.memberCount} />
-            <Stat label="In today" icon={UserCheck} tone="success" value={(d.teamLead.todayAttendance.PRESENT ?? 0) + (d.teamLead.todayAttendance.LATE ?? 0)} hint={`${d.teamLead.todayAttendance.LATE ?? 0} late · ${d.teamLead.notCheckedIn} not in`} />
-            <Stat label="Open queries" icon={LifeBuoy} tone="warning" value={d.teamLead.openQueries} />
-            <Stat label="Open team surveys" icon={Megaphone} tone="info" value={d.teamLead.openSurveys} />
+            {has('ATTENDANCE') && <Stat label="In today" icon={UserCheck} tone="success" value={(d.teamLead.todayAttendance.PRESENT ?? 0) + (d.teamLead.todayAttendance.LATE ?? 0)} hint={`${d.teamLead.todayAttendance.LATE ?? 0} late · ${d.teamLead.notCheckedIn} not in`} />}
+            {has('COMPLIANCE') && <Stat label="Open queries" icon={LifeBuoy} tone="warning" value={d.teamLead.openQueries} />}
+            {has('COMPLIANCE') && <Stat label="Open team surveys" icon={Megaphone} tone="info" value={d.teamLead.openSurveys} />}
           </div>
-          <Card>
+          <div className="grid gap-4 lg:grid-cols-3">
+          {has('ATTENDANCE') && <Card>
+            <CardHeader title="Team today" description={date(d.today, { weekday: 'long', day: 'numeric', month: 'short' })} />
+            <CardBody>
+              <Donut center={`${d.teamLead.memberCount}`} sub="members" slices={[
+                { label: 'Present', value: d.teamLead.todayAttendance.PRESENT ?? 0, color: C.PRESENT },
+                { label: 'Late', value: d.teamLead.todayAttendance.LATE ?? 0, color: C.LATE },
+                { label: 'On leave', value: d.teamLead.todayAttendance.ON_LEAVE ?? 0, color: C.ON_LEAVE },
+                { label: 'Not in yet', value: d.teamLead.notCheckedIn, color: 'var(--muted-foreground)' },
+              ]} />
+            </CardBody>
+          </Card>}
+          {has('PERFORMANCE') && <Card className="lg:col-span-2">
             <CardHeader title="Team performance" description={`KPI achievement · ${monthLabel(d.month)}`} />
             <CardBody>
               {d.teamLead.performance.length ? (
@@ -234,7 +248,8 @@ export default function DashboardPage() {
                 <p className="text-sm text-muted-foreground">No members yet.</p>
               )}
             </CardBody>
-          </Card>
+          </Card>}
+          </div>
         </section>
       )}
 
@@ -244,21 +259,49 @@ export default function DashboardPage() {
           <h2 id="org-heading" className="text-lg font-semibold">Organisation</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Active employees" icon={Users} value={d.organisation.headcount.active} hint={`${d.organisation.headcount.total} registered · ${d.organisation.headcount.resigned + d.organisation.headcount.terminated} left`} />
-            <Stat label="Present today" icon={UserCheck} tone="success" value={(d.organisation.todayAttendance.PRESENT ?? 0) + (d.organisation.todayAttendance.LATE ?? 0)} hint={`${d.organisation.todayAttendance.LATE ?? 0} late · ${d.organisation.todayAttendance.ON_LEAVE ?? 0} on leave`} />
+            {has('ATTENDANCE') && <><Stat label="Present today" icon={UserCheck} tone="success" value={(d.organisation.todayAttendance.PRESENT ?? 0) + (d.organisation.todayAttendance.LATE ?? 0)} hint={`${d.organisation.todayAttendance.LATE ?? 0} late · ${d.organisation.todayAttendance.ON_LEAVE ?? 0} on leave`} />
             <Stat
               label="Hours this month"
               icon={Timer}
               tone="info"
               value={`${d.organisation.hoursThisMonth.scheduled ? Math.round((d.organisation.hoursThisMonth.worked / d.organisation.hoursThisMonth.scheduled) * 100) : 0}%`}
               hint={`${hours(d.organisation.hoursThisMonth.worked)} worked of ${hours(d.organisation.hoursThisMonth.scheduled)}`}
-            />
-            <Stat
+            /></>}
+            {has('PAYROLL') && <Stat
               label="Latest payroll"
               icon={Receipt}
               tone="warning"
               value={d.organisation.latestPayroll ? money(d.organisation.latestPayroll.totalNet, cur) : '—'}
               hint={d.organisation.latestPayroll ? `${monthLabel(d.organisation.latestPayroll.period)} · ${d.organisation.latestPayroll.status.replace('_', ' ').toLowerCase()}` : 'Not processed yet'}
-            />
+            />}
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            {has('ATTENDANCE') && <Card>
+              <CardHeader title="Attendance today" />
+              <CardBody>
+                <Donut center={`${d.organisation.headcount.active}`} sub="active" slices={[
+                  { label: 'Present', value: d.organisation.todayAttendance.PRESENT ?? 0, color: C.PRESENT },
+                  { label: 'Late', value: d.organisation.todayAttendance.LATE ?? 0, color: C.LATE },
+                  { label: 'Absent', value: d.organisation.todayAttendance.ABSENT ?? 0, color: C.ABSENT },
+                  { label: 'On leave', value: d.organisation.todayAttendance.ON_LEAVE ?? 0, color: C.ON_LEAVE },
+                ]} />
+              </CardBody>
+            </Card>}
+            <Card className={has('ATTENDANCE') ? '' : 'lg:col-span-2'}>
+              <CardHeader title="Headcount trend" description="Active employees at each month end" />
+              <CardBody>
+                <Bars items={d.organisation.workforceTrend.map((t) => ({ label: monthLabel(t.month).slice(0, 3), value: t.headcount, title: `${monthLabel(t.month)}: ${t.headcount} employees · +${t.joined} joined · −${t.left} left` }))} />
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {d.organisation.workforceTrend.reduce((a, t) => a + t.joined, 0)} joined · {d.organisation.workforceTrend.reduce((a, t) => a + t.left, 0)} left in the last 6 months
+                </p>
+              </CardBody>
+            </Card>
+            {has('PAYROLL') && d.organisation.payrollTrend.length > 0 && <Card>
+              <CardHeader title="Payroll cost" description="Net pay per month" action={<Link className="text-xs text-primary hover:underline" href="/payroll">Payroll</Link>} />
+              <CardBody>
+                <Bars format={(n) => money(n, cur)} items={d.organisation.payrollTrend.map((r) => ({ label: monthLabel(r.period).slice(0, 3), value: r.totalNet, color: r.status === 'APPROVED' || r.status === 'PAID' ? 'var(--primary)' : 'var(--muted-foreground)', title: `${monthLabel(r.period)}: ${money(r.totalNet, cur)} (${r.status.replace('_', ' ').toLowerCase()})` }))} />
+              </CardBody>
+            </Card>}
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <Card className="lg:col-span-2">
@@ -270,13 +313,13 @@ export default function DashboardPage() {
             <Card>
               <CardHeader title="Needs attention" />
               <CardBody className="space-y-2 text-sm">
-                {[
-                  ['/complaints', 'Open complaints', d.organisation.openComplaints],
-                  ['/queries', 'Open queries', d.organisation.openQueries],
-                  ['/kpi', 'KPI submissions pending', d.organisation.pendingKpi],
-                  ['/policies', 'Draft policies', d.organisation.draftPolicies],
-                  ['/teams', 'Employees without a team', d.organisation.employeesWithoutTeam],
-                ].map(([href, label, n]) => (
+                {([
+                  ['/complaints', 'Open complaints', d.organisation.openComplaints, 'COMPLIANCE'],
+                  ['/queries', 'Open queries', d.organisation.openQueries, 'COMPLIANCE'],
+                  ['/kpi', 'KPI submissions pending', d.organisation.pendingKpi, 'PERFORMANCE'],
+                  ['/policies', 'Draft policies', d.organisation.draftPolicies, 'COMPLIANCE'],
+                  ['/teams', 'Employees without a team', d.organisation.employeesWithoutTeam, null],
+                ] as const).filter((x) => !x[3] || has(x[3])).map(([href, label, n]) => (
                   <Link key={label as string} href={href as string} className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-muted">
                     <span>{label}</span>
                     <Badge tone={(n as number) > 0 ? 'warning' : 'neutral'}>{n as number}</Badge>
@@ -315,7 +358,7 @@ export default function DashboardPage() {
                 {d.system.recentAudit.map((a) => (
                   <li key={a.id} className="flex items-center justify-between gap-3 px-5 py-2.5 text-sm">
                     <span className="truncate">
-                      <span className="font-medium">{a.actorLabel ?? 'system'}</span> <span className="text-muted-foreground">{a.action}</span>
+                      <span className="font-medium">{a.actorLabel ?? 'System'}</span> <span className="text-muted-foreground">{a.actorLabel ? auditActionLabel(a.action).replace(/^./, (c) => c.toLowerCase()) : auditActionLabel(a.action)}</span>
                     </span>
                     <span className="shrink-0 text-xs text-muted-foreground">{dateTime(a.createdAt)}</span>
                   </li>
@@ -327,7 +370,7 @@ export default function DashboardPage() {
       )}
 
       {/* ---------- Announcements & community ---------- */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      {has('COMMUNITY') && <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader title="Company announcements" action={<Link className="text-xs text-primary hover:underline" href="/announcements">All</Link>} />
           {d.announcements.length ? (
@@ -361,7 +404,7 @@ export default function DashboardPage() {
             <EmptyState title="It's quiet here" description="Posts and birthday wishes will show up here." />
           )}
         </Card>
-      </div>
+      </div>}
     </div>
   );
 }

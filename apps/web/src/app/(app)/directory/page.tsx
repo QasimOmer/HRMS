@@ -50,10 +50,7 @@ export default function DirectoryPage() {
                   {e.contactNo && <a href={`tel:${e.contactNo}`} className="flex items-center gap-2 text-muted-foreground hover:text-primary"><Phone className="h-3.5 w-3.5" aria-hidden /> {e.contactNo}</a>}
                   {e.reportingManagerName && <p className="text-xs text-muted-foreground">Reports to {e.reportingManagerName}</p>}
                 </div>
-                <p className="mt-3 border-t pt-2.5 text-xs text-muted-foreground">
-                  {e.tenure}
-                  {e.since && <> · {e.since}</>}
-                </p>
+                {e.since && <p className="mt-3 border-t pt-2.5 text-xs text-muted-foreground" title={e.tenure}>{e.since}</p>}
               </Card>
             </li>
           ))}

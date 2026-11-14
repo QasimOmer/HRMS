@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 import { Inbox } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn, humanize, initials } from '@/lib/format';
+import { AuthImage } from './auth-image';
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
   return <div className={cn('rounded-lg border bg-card text-card-foreground shadow-xs', className)}>{children}</div>;
@@ -100,8 +101,7 @@ export function Avatar({ name, fileId, size = 'md', className }: { name?: string
   return (
     <span className={cn('relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-soft font-semibold text-primary', dim, className)} aria-hidden={!name}>
       {fileId ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={`/api/v1/avatars/${fileId}`} alt={name ? `${name}'s photo` : ''} className="h-full w-full object-cover" loading="lazy" />
+        <AuthImage src={`/api/v1/avatars/${fileId}`} alt={name ? `${name}'s photo` : ''} className="h-full w-full object-cover" loading="lazy" fallback={initials(name)} />
       ) : (
         initials(name)
       )}

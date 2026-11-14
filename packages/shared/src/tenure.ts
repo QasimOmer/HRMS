@@ -16,9 +16,9 @@ export function tenureLabel(joiningDate: string, today: string = new Date().toIS
   return `Member for ${parts.join(' ')}`;
 }
 
-/** "Since Jan 2026". */
-export function sinceLabel(joiningDate: string): string {
-  const [y, m] = joiningDate.split('-').map(Number) as [number, number];
-  const month = new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
-  return `Since ${month} ${y}`;
+/** "Joined 13 November 2026": the one wording for joining dates everywhere (profile, employee page, directory). */
+export function joinedLabel(joiningDate: string): string {
+  const [y, m, d] = joiningDate.slice(0, 10).split('-').map(Number) as [number, number, number];
+  const month = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m - 1];
+  return `Joined ${d} ${month} ${y}`;
 }

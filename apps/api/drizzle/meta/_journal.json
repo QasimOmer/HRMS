@@ -8,6 +8,111 @@
       "when": 1794397466737,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794480344042,
+      "tag": "0001_srs_v1_1_gaps",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794481948631,
+      "tag": "0002_platform_admins",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794483835369,
+      "tag": "0003_company_logo",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794484547222,
+      "tag": "0004_plans_modules",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794503041545,
+      "tag": "0005_user_directory",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794504220549,
+      "tag": "0006_unique_emails",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794505089632,
+      "tag": "0007_email_domain",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794505684196,
+      "tag": "0008_platform_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794506118082,
+      "tag": "0009_platform_branding",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794541656803,
+      "tag": "0010_medical_eligible_kpi_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794542914127,
+      "tag": "0011_community_violations",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794543190657,
+      "tag": "0012_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794567677843,
+      "tag": "0013_site_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794594329807,
+      "tag": "0014_files_content",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794647006591,
+      "tag": "0015_invoices",
+      "breakpoints": true
     }
   ]
 }

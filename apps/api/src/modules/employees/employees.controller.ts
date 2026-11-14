@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import {
   PERMISSIONS as P,
   employeeListQuery,
@@ -7,10 +7,12 @@ import {
   promotionSchema,
   selfProfileSchema,
   terminateSchema,
+  selfProfileUpdateSchema,
+  type SelfProfileUpdateInput,
+  reactivateSchema,
   type EmployeeInput,
   type EmployeeUpdateInput,
   type PromotionInput,
-  type SelfProfileInput,
 } from '@hrms/shared';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -71,6 +73,22 @@ export class EmployeesController {
     return emp;
   }
 
+  /** Give a former employee their place (and optionally their login) back. Their records were never removed. */
+  @Post('employees/:id/reactivate')
+  @RequireAny(P.EMPLOYEES_MANAGE)
+  @Audit('employee.reactivated', 'employee')
+  reactivate(@Param('id', ParseUUIDPipe) id: string, @Body(zp(reactivateSchema)) body: z.infer<typeof reactivateSchema>) {
+    return this.svc.reactivate(id, body.restoreLogin);
+  }
+
+  /** Permanent delete of a former employee (needs "Delete records" too). */
+  @Delete('employees/:id')
+  @RequireAny(P.EMPLOYEES_MANAGE)
+  @Audit('employee.deleted', 'employee')
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.remove(id);
+  }
+
   @Get('me/profile')
   me() {
     const id = currentUser().employeeId;
@@ -79,7 +97,7 @@ export class EmployeesController {
 
   @Patch('me/profile')
   @Audit('employee.self_updated', 'employee')
-  updateSelf(@Body(zp(selfProfileSchema.partial().extend({ fullName: selfProfileSchema.shape.fullName.optional() }))) body: SelfProfileInput) {
+  updateSelf(@Body(zp(selfProfileUpdateSchema)) body: SelfProfileUpdateInput) {
     return this.svc.updateSelf(body);
   }
 

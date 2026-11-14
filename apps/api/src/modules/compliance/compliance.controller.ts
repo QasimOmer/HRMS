@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Put, Query, UploadedFile, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Put, Query, UploadedFile, UploadedFiles, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
@@ -16,19 +16,28 @@ import { z } from 'zod';
 import { config } from '../../config';
 import { als, currentUser } from '../../common/context';
 import { randomToken, sha256 } from '../../common/crypto';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden, notFound } from '../../common/errors';
 import { todayIn } from '../../common/tz';
-import { one, tenantInfo } from '../../common/util';
+import { one, tenantInfo, requireDelete, assertUnused, countWhere } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { NotificationsService } from '../../core/notifications.service';
 import { ScopeService } from '../../core/scope.service';
 import { StorageService, type UploadedFileLike } from '../../core/storage.service';
 import { DbService } from '../../db/db.service';
-import { complaints, departments, employees, policies, queries, queryMessages, users } from '../../db/schema';
+import {
+  complaints,
+  departments,
+  employees,
+  policies,
+  queries,
+  queryMessages,
+  users,
+} from '../../db/schema';
 
 const uploadLimits = { limits: { fileSize: config().MAX_UPLOAD_MB * 1024 * 1024 } };
 
+@RequireModule('COMPLIANCE')
 @Controller()
 export class ComplianceController {
   constructor(
@@ -104,6 +113,15 @@ export class ComplianceController {
   @Audit('policy.archived', 'policy')
   async archive(@Param('id', ParseUUIDPipe) id: string) {
     return one(await this.db.tx.update(policies).set({ status: 'ARCHIVED' }).where(eq(policies.id, id)).returning(), 'Policy');
+  }
+
+  @Delete('policies/:id')
+  @RequireAny(P.POLICIES_MANAGE)
+  @Audit('policy.deleted', 'policy')
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    one(await this.db.tx.delete(policies).where(eq(policies.id, id)).returning({ id: policies.id }), 'Policy');
+    return { id, deleted: true };
   }
 
   /* ---------------- F3 Anonymous complaints ---------------- */

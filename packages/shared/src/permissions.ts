@@ -6,7 +6,7 @@ export const ROLES = ['SUPER_ADMIN', 'HR', 'OPERATIONS', 'TEAM_LEAD', 'EMPLOYEE'
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
-  SUPER_ADMIN: 'Super Admin',
+  SUPER_ADMIN: 'Company Admin', // top role inside one company (the platform owner is the Super Admin)
   HR: 'HR',
   OPERATIONS: 'Operations',
   TEAM_LEAD: 'Team Lead',
@@ -19,6 +19,8 @@ export const PERMISSIONS = {
   USERS_MANAGE_ACCESS: 'users.manage_access',
   TENANT_SETTINGS: 'tenant.settings',
   AUDIT_READ: 'audit.read',
+  /** Permanently delete records (policies, surveys, unused departments…). Super Admin grants it to other roles. */
+  DATA_DELETE: 'data.delete',
 
   // Employees (B)
   EMPLOYEES_READ_ALL: 'employees.read.all',
@@ -127,3 +129,68 @@ export function canAssignRole(actorRoles: Role[], target: Role): boolean {
   if (target === 'SUPER_ADMIN') return false;
   return actorRoles.includes('HR') || actorRoles.includes('OPERATIONS');
 }
+
+/** Human-friendly names for the permission catalogue (shown on Roles & permissions). */
+export const PERMISSION_INFO: Record<Permission, { group: string; label: string; description: string }> = {
+  'roles.manage': { group: 'Access & roles', label: 'Manage roles', description: 'Change what each role is allowed to do.' },
+  'users.manage_access': { group: 'Access & roles', label: 'Manage user access', description: 'Assign roles, disable accounts, send reset links and set passwords.' },
+  'tenant.settings': { group: 'Access & roles', label: 'Company settings', description: 'Edit company name, time zone, currency and system rules.' },
+  'audit.read': { group: 'Access & roles', label: 'View audit trail', description: 'See the history of every change made in the system.' },
+  'data.delete': { group: 'Access & roles', label: 'Delete records', description: 'Permanently delete policies, surveys, unused departments, levels, teams and other records they manage.' },
+
+  'employees.read.all': { group: 'Employees', label: 'View all employees', description: 'Open every employee profile in the company.' },
+  'employees.read.team': { group: 'Employees', label: 'View own team', description: 'Open profiles of the team they lead (salary hidden).' },
+  'employees.manage': { group: 'Employees', label: 'Add & edit employees', description: 'Create employees, edit records and terminate employment.' },
+  'employee_docs.manage': { group: 'Employees', label: 'Manage employee documents', description: 'Edit or delete documents employees uploaded (CNIC, photos…).' },
+  'employment_docs.manage': { group: 'Employees', label: 'Issue employment letters', description: 'Upload offer, appointment, resignation and termination letters.' },
+  'departments.manage': { group: 'Employees', label: 'Departments & levels', description: 'Create departments, levels and their salaries.' },
+  'teams.manage': { group: 'Employees', label: 'Manage all teams', description: 'Create teams and move people between any teams.' },
+  'teams.manage_own': { group: 'Employees', label: 'Manage own team', description: 'Add or remove members of the team they lead.' },
+  'team_transfer.approve': { group: 'Employees', label: 'Approve team transfers', description: 'Approve requests to move a person into another team.' },
+  'promotions.manage': { group: 'Employees', label: 'Record promotions', description: 'Promote employees and change their level and salary.' },
+  'resignation.approve.tl': { group: 'Employees', label: 'Review resignations (Team Lead)', description: 'First review of resignations from their team.' },
+  'resignation.approve.hr': { group: 'Employees', label: 'Approve resignations (HR)', description: 'Final approval of resignations.' },
+  'headcount.read': { group: 'Employees', label: 'Headcount & reports', description: 'See workforce numbers, joiners and leavers.' },
+  'directory.settings': { group: 'Employees', label: 'Directory & session settings', description: 'Show or hide joining dates in the directory and set the sign-out timeout.' },
+
+  'attendance.read.all': { group: 'Attendance & leave', label: 'View all attendance', description: 'See everyone’s attendance and reports.' },
+  'attendance.read.team': { group: 'Attendance & leave', label: 'View team attendance', description: 'See attendance of the team they lead.' },
+  'attendance.manage': { group: 'Attendance & leave', label: 'Manage attendance', description: 'Register devices, import punches and mark work-from-home days.' },
+  'attendance_correction.approve.tl': { group: 'Attendance & leave', label: 'Approve corrections (Team Lead)', description: 'First approval of attendance corrections from their team.' },
+  'attendance_correction.approve.hr': { group: 'Attendance & leave', label: 'Approve corrections (HR)', description: 'Final approval of attendance corrections.' },
+  'overtime.approve.tl': { group: 'Attendance & leave', label: 'Approve overtime', description: 'Approve team overtime and record the work done.' },
+  'compensation.approve.tl': { group: 'Attendance & leave', label: 'Approve compensation (Team Lead)', description: 'First approval of requests to use overtime.' },
+  'compensation.approve.hr': { group: 'Attendance & leave', label: 'Approve compensation (HR)', description: 'Final approval of requests to use overtime.' },
+  'leave.approve.tl': { group: 'Attendance & leave', label: 'Approve leave (Team Lead)', description: 'First approval of leave from their team.' },
+  'leave.approve.hr': { group: 'Attendance & leave', label: 'Approve leave (HR)', description: 'Final approval and cancellation of leave.' },
+  'leave.manage': { group: 'Attendance & leave', label: 'Leave settings', description: 'Leave types, yearly allowance, carry-forward and balance adjustments.' },
+  'holidays.manage': { group: 'Attendance & leave', label: 'Manage holidays', description: 'Add public and company holidays.' },
+  'calendar.manage': { group: 'Attendance & leave', label: 'Manage calendar', description: 'Add company and department events.' },
+
+  'payroll.read.all': { group: 'Payroll', label: 'View payroll', description: 'See payroll runs and everyone’s salary slips.' },
+  'payroll.process': { group: 'Payroll', label: 'Process payroll', description: 'Run, adjust, submit and reopen monthly payroll.' },
+  'payroll.approve.hr': { group: 'Payroll', label: 'Approve payroll (HR)', description: 'First approval of a payroll run.' },
+  'payroll.approve.ops': { group: 'Payroll', label: 'Approve payroll (Operations)', description: 'Final approval before salary slips are released.' },
+  'loans.manage': { group: 'Payroll', label: 'Manage loans', description: 'Record loans, approve loan requests and log repayments.' },
+  'medical.manage': { group: 'Payroll', label: 'Manage medical claims', description: 'Review and approve medical claims.' },
+  'food_allowance.manage': { group: 'Payroll', label: 'Food allowance rules', description: 'Set food allowance amount and required hours per department.' },
+
+  'kpi.approve.tl': { group: 'Performance', label: 'Review KPIs (Team Lead)', description: 'Review team KPI submissions and add remarks.' },
+  'kpi.approve.hr': { group: 'Performance', label: 'Approve KPIs (HR)', description: 'Final approval of KPI submissions.' },
+  'kpi.targets.manage': { group: 'Performance', label: 'Set KPI targets', description: 'Assign targets and the incentive formula.' },
+  'incentives.manage': { group: 'Performance', label: 'Manage incentives', description: 'View and void incentives.' },
+
+  'policies.manage': { group: 'Compliance', label: 'Manage policies', description: 'Upload, publish and archive company policies.' },
+  'guidelines.manage': { group: 'Compliance', label: 'Community guidelines', description: 'Edit the guidelines people accept before using the community.' },
+  'complaints.manage': { group: 'Compliance', label: 'Handle complaints', description: 'Read and resolve anonymous complaints.' },
+  'queries.respond': { group: 'Compliance', label: 'Answer queries', description: 'Reply to and resolve queries assigned to them.' },
+  'queries.read.all': { group: 'Compliance', label: 'View all queries', description: 'Monitor queries across all departments.' },
+  'surveys.manage': { group: 'Compliance', label: 'Manage all surveys', description: 'Create and edit surveys for any department or team.' },
+  'surveys.manage_team': { group: 'Compliance', label: 'Team surveys', description: 'Create surveys for the team they lead.' },
+
+  'community.moderate': { group: 'Community', label: 'Moderate community', description: 'Delete posts and comments that break the guidelines.' },
+  'community.posting.manage': { group: 'Community', label: 'Control posting', description: 'Decide who may post and switch engagement features on or off.' },
+  'announcements.publish': { group: 'Community', label: 'Publish announcements', description: 'Post official announcements to the feed and dashboards.' },
+
+  'reports.read': { group: 'Reports', label: 'View reports', description: 'See company-wide reports and statistics.' },
+};

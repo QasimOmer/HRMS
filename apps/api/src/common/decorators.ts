@@ -1,5 +1,5 @@
 import { SetMetadata, createParamDecorator, type ExecutionContext } from '@nestjs/common';
-import type { Permission } from '@hrms/shared';
+import type { Module, Permission } from '@hrms/shared';
 import { currentUser, type AuthUser } from './context';
 
 export const IS_PUBLIC = 'isPublic';
@@ -22,3 +22,7 @@ export const SKIP_CSRF = 'skipCsrf';
 export const SkipCsrf = () => SetMetadata(SKIP_CSRF, true);
 
 export const User = createParamDecorator((_: unknown, _ctx: ExecutionContext): AuthUser => currentUser());
+
+export const MODULE_KEY = 'requiredModule';
+/** Feature module (subscription) an endpoint belongs to; 'CORE' marks endpoints every plan includes. */
+export const RequireModule = (m: Module | 'CORE') => SetMetadata(MODULE_KEY, m);

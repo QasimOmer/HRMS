@@ -7,11 +7,19 @@ export const workScheduleSchema = z.object({
   startTime: time,
   endTime: time,
   breakMinutes: z.coerce.number().int().min(0).max(240),
-  graceMinutes: z.coerce.number().int().min(0).max(120),
   workingDays: z.array(z.number().int().min(0).max(6)).min(1), // 0 = Sunday
   isDefault: z.boolean().default(false),
 });
 export type WorkScheduleInput = z.infer<typeof workScheduleSchema>;
+
+/** BIO-02: device registration. ZKTeco ADMS devices are identified by serial number. */
+export const DEVICE_PROTOCOLS = ['ZKTECO_ADMS', 'HIKVISION_ISAPI', 'GENERIC'] as const;
+export const deviceSchema = z.object({
+  name: trimmed(2, 80),
+  protocol: z.enum(DEVICE_PROTOCOLS).default('GENERIC'),
+  serialNumber: z.string().trim().max(64).regex(/^[A-Za-z0-9-]*$/, 'Letters, digits and dashes only').optional(),
+  location: optionalText(120),
+});
 
 /** Biometric device push (C1). */
 export const devicePunchSchema = z.object({
@@ -61,9 +69,12 @@ export const overtimeDecisionSchema = z.object({
 export const compensationRequestSchema = z.object({
   type: z.enum(COMPENSATION_TYPES),
   minutes: z.coerce.number().int().min(30).max(100 * 60),
-  date: isoDate.optional(), // required for HALF_DAY
+  date: isoDate.optional(), // required for HALF_DAY and REDUCED_HOURS
   reason: trimmed(5, 1000),
-}).refine((v) => v.type !== 'HALF_DAY' || !!v.date, { message: 'Pick the half-day date', path: ['date'] });
+})
+  .refine((v) => v.type !== 'HALF_DAY' || !!v.date, { message: 'Pick the half-day date', path: ['date'] })
+  // OVT-07: e.g. 2 hours overtime → 2 hours fewer required on the chosen working day.
+  .refine((v) => v.type !== 'REDUCED_HOURS' || !!v.date, { message: 'Pick the working day to shorten', path: ['date'] });
 
 export const leaveTypeSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z_]{2,20}$/),
@@ -71,6 +82,8 @@ export const leaveTypeSchema = z.object({
   annualAllowance: z.coerce.number().min(0).max(365),
   isPaid: z.boolean().default(true),
   derivedFromOvertime: z.boolean().default(false),
+  carryForward: z.boolean().default(false),
+  carryForwardMax: z.coerce.number().min(0).max(365).nullable().optional(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#1e3a8a'),
   isActive: z.boolean().default(true),
 });

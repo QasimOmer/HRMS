@@ -3,13 +3,14 @@
 import { PERMISSIONS as P, POLICY_CATEGORIES, POLICY_CATEGORY_LABELS, type PolicyCategory } from '@hrms/shared';
 import { FileText, Plus } from 'lucide-react';
 import Link from 'next/link';
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, EmptyState, LoadingRows, PageHeader, StatusBadge } from '@/components/ui/display';
 import { Field, Input, Select, Textarea } from '@/components/ui/form';
 import { Dialog } from '@/components/ui/overlay';
+import { FileUpload } from '@/components/ui/file-upload';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { date } from '@/lib/format';
@@ -26,12 +27,12 @@ export default function PoliciesPage() {
   const [open, setOpen] = useState(false);
   const [v, setV] = useState({ category: 'COMPANY' as PolicyCategory, title: '', summary: '', content: '' });
   const [busy, setBusy] = useState(false);
-  const file = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
 
   const create = async () => {
     const fd = new FormData();
     Object.entries(v).forEach(([k, x]) => x && fd.set(k, x));
-    const f = file.current?.files?.[0];
+    const f = files[0];
     if (f) fd.set('file', f);
     setBusy(true);
     try {
@@ -39,6 +40,7 @@ export default function PoliciesPage() {
       toast.success('Saved as draft. Publish it to make it visible to employees.');
       setOpen(false);
       setV({ category: 'COMPANY', title: '', summary: '', content: '' });
+      setFiles([]);
       qc.invalidateQueries({ queryKey: ['/policies'] });
     } catch (e) {
       toast.error((e as Error).message);
@@ -82,7 +84,7 @@ export default function PoliciesPage() {
           <Field label="Title" required>{(a) => <Input {...a} value={v.title} onChange={(e) => setV({ ...v, title: e.target.value })} />}</Field>
           <Field label="Summary">{(a) => <Input {...a} value={v.summary} onChange={(e) => setV({ ...v, summary: e.target.value })} />}</Field>
           <Field label="Policy text">{(a) => <Textarea {...a} rows={8} value={v.content} onChange={(e) => setV({ ...v, content: e.target.value })} />}</Field>
-          <Field label="PDF document (optional)">{(a) => <Input {...a} ref={file} type="file" accept="application/pdf" className="pt-1.5" />}</Field>
+          <Field label="PDF document (optional)">{(a) => <FileUpload {...a} value={files} onChange={setFiles} accept="application/pdf" label="Upload policy PDF" />}</Field>
         </div>
       </Dialog>
     </>

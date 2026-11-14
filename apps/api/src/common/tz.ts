@@ -28,7 +28,7 @@ export function localMinutes(d: Date, tz: string): number {
   return Number(p.hour) * 60 + Number(p.minute);
 }
 
-function offsetMinutes(d: Date, tz: string): number {
+export function offsetMinutes(d: Date, tz: string): number {
   const p = parts(d, tz);
   const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
   return Math.round((asUtc - d.getTime()) / 60_000);

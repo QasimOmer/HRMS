@@ -1,23 +1,26 @@
 import { Body, Controller, Delete, Get, Headers, HttpCode, Param, ParseUUIDPipe, Post, Query, UnauthorizedException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
+  ATTENDANCE_COLORS,
   PERMISSIONS as P,
   attendanceCorrectionSchema,
   attendanceQuery,
   compensationRequestSchema,
   decision,
   devicePunchSchema,
+  deviceSchema,
   manualPunchSchema,
   overtimeDecisionSchema,
   type DecisionInput,
+  type PunchType,
 } from '@hrms/shared';
-import { and, asc, desc, eq, gte, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { als, currentUser } from '../../common/context';
 import { randomToken, sha256 } from '../../common/crypto';
-import { Audit, Public, RequireAny, SkipAudit, SkipCsrf } from '../../common/decorators';
+import { Audit, Public, RequireAny, SkipAudit, SkipCsrf, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
-import { todayIn, zonedInstant } from '../../common/tz';
+import { localMinutes, monthRange, todayIn, zonedInstant } from '../../common/tz';
 import { one, scoped } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { ApprovalsService } from '../../core/approvals.service';
@@ -29,16 +32,23 @@ import {
   attendanceDays,
   attendanceDevices,
   compensationRequests,
+  deviceSerials,
   departments,
   employees,
+  foodAllowanceRules,
+  heldPunches,
   overtimeRecords,
 } from '../../db/schema';
+import { foodEligibleDays } from '../payroll/payroll.logic';
 import { AttendanceService } from './attendance.service';
+import { scheduledNetMinutes } from './attendance.logic';
+import { ONLINE_WINDOW_MS } from './biometric';
 
 const reqList = z.object({ status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']).optional(), mine: z.coerce.boolean().optional() });
 const dailyQuery = z.object({ date: z.iso.date().optional(), departmentId: z.uuid().optional() });
 const monthQuery = z.object({ month: z.string().regex(/^\d{4}-\d{2}$/), departmentId: z.uuid().optional() });
 
+@RequireModule('ATTENDANCE')
 @Controller('attendance')
 export class AttendanceController {
   constructor(
@@ -51,38 +61,66 @@ export class AttendanceController {
 
   /* ---------------- Biometric devices (C1) ---------------- */
 
+  @RequireModule('BIOMETRIC')
   @Get('devices')
   @RequireAny(P.ATTENDANCE_MANAGE)
-  devices() {
-    return this.db.tx
-      .select({ id: attendanceDevices.id, name: attendanceDevices.name, apiKeyPrefix: attendanceDevices.apiKeyPrefix, lastSeenAt: attendanceDevices.lastSeenAt, isActive: attendanceDevices.isActive, createdAt: attendanceDevices.createdAt })
+  async devices() {
+    const rows = await this.db.tx
+      .select({
+        id: attendanceDevices.id,
+        name: attendanceDevices.name,
+        protocol: attendanceDevices.protocol,
+        serialNumber: attendanceDevices.serialNumber,
+        location: attendanceDevices.location,
+        apiKeyPrefix: attendanceDevices.apiKeyPrefix,
+        lastSeenAt: attendanceDevices.lastSeenAt,
+        lastSyncAt: attendanceDevices.lastSyncAt,
+        isActive: attendanceDevices.isActive,
+        createdAt: attendanceDevices.createdAt,
+      })
       .from(attendanceDevices)
       .orderBy(asc(attendanceDevices.name));
+    // BIO-07: online / offline and last sync per device.
+    return rows.map((d) => ({ ...d, online: d.isActive && !!d.lastSeenAt && Date.now() - d.lastSeenAt.getTime() < ONLINE_WINDOW_MS }));
   }
 
-  /** Returns the device key once; only its hash is stored. */
+  /** BIO-02: register a device to this company. Returns the device key once; only its hash is stored. */
+  @RequireModule('BIOMETRIC')
   @Post('devices')
   @RequireAny(P.ATTENDANCE_MANAGE)
   @Audit('attendance.device_created', 'attendance_device')
-  async createDevice(@Body(zp(z.object({ name: z.string().trim().min(2).max(80) }))) body: { name: string }) {
+  async createDevice(@Body(zp(deviceSchema)) body: z.infer<typeof deviceSchema>) {
     const tenantId = currentUser().tenantId;
+    const tx = this.db.tx;
+    const serial = body.serialNumber?.trim().toUpperCase() || null;
+    if (body.protocol === 'ZKTECO_ADMS' && !serial) throw badRequest('Enter the serial number shown in the device menu (System info → Serial number)', 'SERIAL_REQUIRED');
+    if (serial) {
+      const [taken] = await tx.select({ t: deviceSerials.tenantId }).from(deviceSerials).where(eq(deviceSerials.serialNumber, serial));
+      if (taken) throw badRequest('A device with this serial number is already registered', 'SERIAL_TAKEN');
+    }
     const secret = randomToken(32);
     const key = `${tenantId}.${secret}`;
     const row = one(
-      await this.db.tx.insert(attendanceDevices).values({ tenantId, name: body.name, apiKeyHash: sha256(secret), apiKeyPrefix: secret.slice(0, 6) }).returning(),
+      await tx
+        .insert(attendanceDevices)
+        .values({ tenantId, name: body.name, protocol: body.protocol, serialNumber: serial, location: body.location, apiKeyHash: sha256(secret), apiKeyPrefix: secret.slice(0, 6) })
+        .returning(),
     );
-    return { id: row.id, name: row.name, apiKey: key };
+    if (serial) await tx.insert(deviceSerials).values({ serialNumber: serial, tenantId, deviceId: row.id });
+    return { id: row.id, name: row.name, protocol: row.protocol, apiKey: key };
   }
 
+  @RequireModule('BIOMETRIC')
   @Delete('devices/:id')
   @RequireAny(P.ATTENDANCE_MANAGE)
   @Audit('attendance.device_revoked', 'attendance_device')
   async revokeDevice(@Param('id', ParseUUIDPipe) id: string) {
     await this.db.tx.update(attendanceDevices).set({ isActive: false }).where(eq(attendanceDevices.id, id));
+    await this.db.tx.delete(deviceSerials).where(eq(deviceSerials.deviceId, id));
     return { id, revoked: true };
   }
 
-  /** Device push endpoint. Auth: `X-Device-Key: <tenantId>.<secret>`. */
+  /** Generic JSON push (custom middleware / older integrations). Auth: `X-Device-Key: <tenantId>.<secret>`. */
   @Public()
   @SkipCsrf()
   @SkipAudit()
@@ -99,13 +137,65 @@ export class AttendanceController {
     return this.db.inTenant(tenantId, async (tx) => {
       const [device] = await tx.select().from(attendanceDevices).where(eq(attendanceDevices.apiKeyHash, sha256(key.slice(37))));
       if (!device || !device.isActive) throw new UnauthorizedException({ message: 'Invalid device key', code: 'DEVICE_AUTH' });
-      const ids = await this.svc.employeeIdsByCode(body.punches.map((p) => p.employeeCode));
-      const valid = body.punches.filter((p) => ids.has(p.employeeCode));
-      const res = await this.svc.ingest(valid.map((p) => ({ employeeId: ids.get(p.employeeCode)!, at: new Date(p.at), type: p.type })), 'DEVICE', device.id);
-      await tx.update(attendanceDevices).set({ lastSeenAt: new Date() }).where(eq(attendanceDevices.id, device.id));
-      await this.audit.log(tx, { tenantId, action: 'attendance.device_push', actorLabel: `device:${device.name}`, entityType: 'attendance_device', entityId: device.id, metadata: { received: body.punches.length, inserted: res.inserted } });
-      return { received: body.punches.length, accepted: valid.length, inserted: res.inserted, unknownEmployeeCodes: [...new Set(body.punches.filter((p) => !ids.has(p.employeeCode)).map((p) => p.employeeCode))] };
+      const res = await this.svc.ingestDevicePunches(device.id, body.punches.map((p) => ({ deviceUserId: p.employeeCode, at: new Date(p.at), type: p.type ?? null })));
+      await this.audit.log(tx, { tenantId, action: 'attendance.device_push', actorLabel: `device:${device.name}`, entityType: 'attendance_device', entityId: device.id, metadata: { protocol: 'GENERIC', ...res } });
+      return { received: res.received, accepted: body.punches.filter((p) => !res.unknownDeviceUserIds.includes(p.employeeCode)).length, inserted: res.inserted, held: res.held, unknownEmployeeCodes: res.unknownDeviceUserIds };
     });
+  }
+
+  /* ---------------- Held punches: unknown device user IDs (BIO-04) ---------------- */
+
+  @RequireModule('BIOMETRIC')
+  @Get('held-punches')
+  @RequireAny(P.ATTENDANCE_MANAGE)
+  async heldPunchList() {
+    return this.db.tx
+      .select({
+        deviceUserId: heldPunches.deviceUserId,
+        punches: sql<number>`count(*)::int`,
+        firstAt: sql<Date>`min(${heldPunches.punchedAt})`.mapWith(heldPunches.punchedAt),
+        lastAt: sql<Date>`max(${heldPunches.punchedAt})`.mapWith(heldPunches.punchedAt),
+        devices: sql<string>`string_agg(distinct ${attendanceDevices.name}, ', ')`,
+      })
+      .from(heldPunches)
+      .leftJoin(attendanceDevices, eq(attendanceDevices.id, heldPunches.deviceId))
+      .where(isNull(heldPunches.resolvedAt))
+      .groupBy(heldPunches.deviceUserId)
+      .orderBy(desc(sql`max(${heldPunches.punchedAt})`));
+  }
+
+  /** Link a device user ID to an employee; their held punches are then added to attendance. */
+  @RequireModule('BIOMETRIC')
+  @Post('held-punches/assign')
+  @RequireAny(P.ATTENDANCE_MANAGE)
+  @Audit('attendance.device_user_mapped', 'employee')
+  async assignHeld(@Body(zp(z.object({ deviceUserId: z.string().trim().min(1).max(40), employeeId: z.uuid() }))) body: { deviceUserId: string; employeeId: string }) {
+    const tx = this.db.tx;
+    const emp = one(await tx.select({ id: employees.id, bio: employees.biometricUserId }).from(employees).where(eq(employees.id, body.employeeId)), 'Employee');
+    const [other] = await tx.select({ name: employees.fullName }).from(employees).where(and(eq(employees.biometricUserId, body.deviceUserId), sql`${employees.id} <> ${emp.id}`));
+    if (other) throw badRequest(`Device user ID ${body.deviceUserId} is already linked to ${other.name}`, 'ALREADY_MAPPED');
+    await tx.update(employees).set({ biometricUserId: body.deviceUserId }).where(eq(employees.id, emp.id));
+    const held = await tx.select().from(heldPunches).where(and(eq(heldPunches.deviceUserId, body.deviceUserId), isNull(heldPunches.resolvedAt)));
+    let inserted = 0;
+    for (const deviceId of new Set(held.map((h) => h.deviceId))) {
+      const r = await this.svc.ingest(held.filter((h) => h.deviceId === deviceId).map((h) => ({ employeeId: emp.id, at: h.punchedAt, type: h.type as PunchType | null })), 'DEVICE', deviceId);
+      inserted += r.inserted;
+    }
+    await tx.update(heldPunches).set({ resolvedAt: new Date(), resolution: 'ASSIGNED' }).where(and(eq(heldPunches.deviceUserId, body.deviceUserId), isNull(heldPunches.resolvedAt)));
+    return { id: emp.id, deviceUserId: body.deviceUserId, released: held.length, inserted };
+  }
+
+  @RequireModule('BIOMETRIC')
+  @Post('held-punches/discard')
+  @RequireAny(P.ATTENDANCE_MANAGE)
+  @Audit('attendance.held_punches_discarded')
+  async discardHeld(@Body(zp(z.object({ deviceUserId: z.string().trim().min(1).max(40) }))) body: { deviceUserId: string }) {
+    const rows = await this.db.tx
+      .update(heldPunches)
+      .set({ resolvedAt: new Date(), resolution: 'DISCARDED' })
+      .where(and(eq(heldPunches.deviceUserId, body.deviceUserId), isNull(heldPunches.resolvedAt)))
+      .returning({ id: heldPunches.id });
+    return { discarded: rows.length };
   }
 
   /** HR bulk import (CSV parsed in the browser into the same shape as device pushes). */
@@ -238,6 +328,99 @@ export class AttendanceController {
     return { month, ...agg, today: today ?? null, overtime: await this.svc.overtimeBalance(employeeId) };
   }
 
+  /**
+   * Individual attendance dashboard (ADB-01–07). The month changes the summary, figures and charts;
+   * `latest` always holds the 5 most recent recorded days.
+   */
+  @Get('me/dashboard')
+  async myDashboard(@Query(zp(z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional(), employeeId: z.uuid().optional() }))) q: { month?: string; employeeId?: string }) {
+    const user = currentUser();
+    const employeeId = q.employeeId ?? this.scope.requireEmployee();
+    if (employeeId !== user.employeeId) {
+      const visible = await this.scope.visibleEmployeeIds(P.ATTENDANCE_READ_ALL, P.ATTENDANCE_READ_TEAM);
+      if (visible && !visible.includes(employeeId)) throw forbidden();
+    }
+    const t = await this.svc.tenant();
+    const month = q.month ?? todayIn(t.timezone).slice(0, 7);
+    const tx = this.db.tx;
+    const days = await tx
+      .select()
+      .from(attendanceDays)
+      .where(and(eq(attendanceDays.employeeId, employeeId), sql`to_char(${attendanceDays.date}, 'YYYY-MM') = ${month}`))
+      .orderBy(asc(attendanceDays.date));
+
+    const n = (st: string[]) => days.filter((d) => st.includes(d.status)).length;
+    const counts = { present: n(['PRESENT']), late: n(['LATE']), absent: n(['ABSENT']), leave: n(['ON_LEAVE', 'HALF_DAY']) };
+    const attended = counts.present + counts.late + n(['HALF_DAY']);
+    const base = attended + counts.absent;
+    const withIn = days.filter((d) => d.checkIn);
+    const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, x) => a + x, 0) / xs.length) : null);
+    const avgIn = avg(withIn.map((d) => localMinutes(d.checkIn!, t.timezone)));
+
+    const [emp] = await tx.select({ departmentId: employees.departmentId }).from(employees).where(eq(employees.id, employeeId));
+    const [rule] = emp
+      ? await tx.select().from(foodAllowanceRules).innerJoin(departments, eq(departments.id, foodAllowanceRules.departmentId)).where(and(eq(foodAllowanceRules.departmentId, emp.departmentId), eq(foodAllowanceRules.isActive, true), eq(departments.foodAllowanceEnabled, true)))
+      : [];
+    const foodDays = rule ? foodEligibleDays(rule.food_allowance_rules, days) : null;
+
+    // 6-month trend ending at the selected month.
+    const [y, m] = month.split('-').map(Number) as [number, number];
+    const months = Array.from({ length: 6 }, (_, i) => { const d = new Date(Date.UTC(y, m - 1 - (5 - i), 1)); return d.toISOString().slice(0, 7); });
+    const trendRows = await tx
+      .select({
+        month: sql<string>`to_char(${attendanceDays.date}, 'YYYY-MM')`,
+        attended: sql<number>`count(*) filter (where ${attendanceDays.status} in ('PRESENT','LATE','HALF_DAY'))::int`,
+        absent: sql<number>`count(*) filter (where ${attendanceDays.status} = 'ABSENT')::int`,
+        late: sql<number>`count(*) filter (where ${attendanceDays.status} = 'LATE')::int`,
+      })
+      .from(attendanceDays)
+      .where(and(eq(attendanceDays.employeeId, employeeId), gte(attendanceDays.date, `${months[0]}-01`), lte(attendanceDays.date, monthRange(month).to)))
+      .groupBy(sql`to_char(${attendanceDays.date}, 'YYYY-MM')`);
+    const trend = months.map((mo) => {
+      const r = trendRows.find((x) => x.month === mo);
+      const b = (r?.attended ?? 0) + (r?.absent ?? 0);
+      return { month: mo, percentage: b ? Math.round(((r?.attended ?? 0) / b) * 1000) / 10 : null, late: r?.late ?? 0 };
+    });
+
+    const latest = await tx
+      .select({ date: attendanceDays.date, status: attendanceDays.status, checkIn: attendanceDays.checkIn, checkOut: attendanceDays.checkOut, workedMinutes: attendanceDays.workedMinutes, breakMinutes: attendanceDays.breakMinutes, overtimeMinutes: attendanceDays.overtimeMinutes, lateMinutes: attendanceDays.lateMinutes })
+      .from(attendanceDays)
+      .where(and(eq(attendanceDays.employeeId, employeeId), sql`${attendanceDays.status} not in ('WEEKEND', 'HOLIDAY')`))
+      .orderBy(desc(attendanceDays.date))
+      .limit(5);
+
+    // Shift shown in the summary header and as the reference line on the daily chart.
+    const shift = await this.svc.scheduleFor(employeeId);
+    const [ot] = await tx
+      .select({ m: sql<number>`coalesce(sum(coalesce(${overtimeRecords.approvedMinutes}, ${overtimeRecords.minutes})), 0)::int` })
+      .from(overtimeRecords)
+      .where(and(eq(overtimeRecords.employeeId, employeeId), eq(overtimeRecords.status, 'APPROVED'), sql`to_char(${overtimeRecords.date}, 'YYYY-MM') = ${month}`));
+    const workedDays = days.filter((d) => d.workedMinutes > 0);
+
+    return {
+      month,
+      percentage: base ? Math.round((attended / base) * 1000) / 10 : null,
+      daysRecorded: days.filter((d) => d.status !== 'WEEKEND' && d.status !== 'HOLIDAY').length,
+      counts,
+      figures: {
+        workedMinutes: days.reduce((a, d) => a + d.workedMinutes, 0),
+        scheduledMinutes: days.reduce((a, d) => a + d.scheduledMinutes, 0),
+        overtimeMinutes: days.reduce((a, d) => a + d.overtimeMinutes, 0),
+        lateMinutes: days.reduce((a, d) => a + d.lateMinutes, 0),
+        averageCheckIn: avgIn === null ? null : `${String(Math.floor(avgIn / 60)).padStart(2, '0')}:${String(avgIn % 60).padStart(2, '0')}`,
+        averageBreakMinutes: avg(withIn.map((d) => d.breakMinutes)),
+        averageWorkedMinutes: avg(workedDays.map((d) => d.workedMinutes)),
+        approvedOvertimeMinutes: ot?.m ?? 0,
+        foodEligibleDays: foodDays,
+      },
+      shift: { start: String(shift.startTime).slice(0, 5), end: String(shift.endTime).slice(0, 5), minutes: scheduledNetMinutes(shift) },
+      daily: days.filter((d) => d.status !== 'WEEKEND' && d.status !== 'HOLIDAY').map((d) => ({ date: d.date, status: d.status, workedMinutes: d.workedMinutes, scheduledMinutes: d.scheduledMinutes })),
+      trend,
+      latest,
+      colors: ATTENDANCE_COLORS,
+    };
+  }
+
   /** Mark a day as work-from-home (affects food allowance eligibility, D4). */
   @Post('days/flags')
   @RequireAny(P.ATTENDANCE_MANAGE)
@@ -301,6 +484,33 @@ export class AttendanceController {
     if (c.checkIn) punches.push({ employeeId: c.employeeId, at: zonedInstant(c.date, c.checkIn.slice(0, 5), t.timezone), type: 'IN' as const, note: `Correction ${c.id}` });
     if (c.checkOut) punches.push({ employeeId: c.employeeId, at: zonedInstant(c.date, c.checkOut.slice(0, 5), t.timezone), type: 'OUT' as const, note: `Correction ${c.id}` });
     await this.svc.ingest(punches, 'CORRECTION');
+  }
+
+  /**
+   * HR / Company Admin fix a day directly (no approval needed for people who manage attendance).
+   * Stored as correction punches, so the original device punches stay in the history and the audit log.
+   */
+  @Post('days/correct')
+  @RequireAny(P.ATTENDANCE_MANAGE)
+  @Audit('attendance.corrected_directly', 'employee')
+  async correctDirectly(@Body(zp(z.object({
+    employeeId: z.uuid(),
+    date: z.iso.date(),
+    checkIn: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    checkOut: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    note: z.string().trim().min(3).max(300),
+  }))) body: { employeeId: string; date: string; checkIn?: string; checkOut?: string; note: string }) {
+    if (!body.checkIn && !body.checkOut) throw badRequest('Enter a check-in or check-out time');
+    if (body.checkIn && body.checkOut && body.checkOut <= body.checkIn) throw badRequest('Check-out must be after check-in');
+    const t = await this.svc.tenant();
+    if (body.date > todayIn(t.timezone)) throw badRequest('You cannot correct a future day');
+    const note = `Corrected by ${currentUser().email}: ${body.note}`;
+    const punches = [];
+    if (body.checkIn) punches.push({ employeeId: body.employeeId, at: zonedInstant(body.date, body.checkIn, t.timezone), type: 'IN' as const, note });
+    if (body.checkOut) punches.push({ employeeId: body.employeeId, at: zonedInstant(body.date, body.checkOut, t.timezone), type: 'OUT' as const, note });
+    await this.svc.ingest(punches, 'CORRECTION');
+    const [day] = await this.db.tx.select().from(attendanceDays).where(and(eq(attendanceDays.employeeId, body.employeeId), eq(attendanceDays.date, body.date)));
+    return { id: body.employeeId, day: day ?? null };
   }
 
   @Post('corrections/:id/decision')
@@ -384,9 +594,15 @@ export class AttendanceController {
     if (body.type === 'PAID' && !emp?.paid) throw badRequest('Paid overtime compensation is not available in your department', 'NOT_AVAILABLE');
     const bal = await this.svc.overtimeBalance(employeeId);
     const minutes = body.type === 'HALF_DAY' ? Math.round(bal.dayMinutes / 2) : body.minutes;
+    if (body.type === 'REDUCED_HOURS') {
+      // OVT-07: shorten an upcoming working day, never by more than the full shift.
+      if (body.date! < todayIn((await this.svc.tenant()).timezone)) throw badRequest('Pick today or a future working day', 'DATE_IN_PAST');
+      if (minutes > bal.dayMinutes) throw badRequest('You can reduce a day by at most one full shift', 'TOO_MANY_MINUTES');
+    }
     if (minutes > bal.availableMinutes) throw badRequest(`Not enough approved overtime (available: ${Math.floor(bal.availableMinutes / 60)}h ${bal.availableMinutes % 60}m)`, 'INSUFFICIENT_OVERTIME');
     const row = one(await tx.insert(compensationRequests).values({ tenantId: currentUser().tenantId, employeeId, type: body.type, minutes, date: body.date, reason: body.reason }).returning());
-    const wf = await this.approvals.submit('COMPENSATION', row.id, employeeId, { title: body.type === 'PAID' ? 'Paid overtime compensation' : 'Half-day compensation', link: '/attendance/overtime' });
+    const title = body.type === 'PAID' ? 'Paid overtime compensation' : body.type === 'HALF_DAY' ? 'Half-day compensation' : 'Shorter working day (overtime adjustment)';
+    const wf = await this.approvals.submit('COMPENSATION', row.id, employeeId, { title, link: '/attendance/overtime' });
     await tx.update(compensationRequests).set({ status: wf.status, currentStep: wf.currentStep }).where(eq(compensationRequests.id, row.id));
     return { ...row, status: wf.status, currentStep: wf.currentStep };
   }
@@ -397,7 +613,7 @@ export class AttendanceController {
     const c = one(await this.db.tx.select().from(compensationRequests).where(eq(compensationRequests.id, id)), 'Compensation request');
     const wf = await this.approvals.decide('COMPENSATION', c, body.approve, body.comment, { title: 'Overtime compensation', link: '/attendance/overtime' });
     await this.db.tx.update(compensationRequests).set({ status: wf.status, currentStep: wf.currentStep }).where(eq(compensationRequests.id, id));
-    if (wf.status === 'APPROVED' && c.type === 'HALF_DAY' && c.date) await this.svc.recompute(c.employeeId, c.date, c.date);
+    if (wf.status === 'APPROVED' && (c.type === 'HALF_DAY' || c.type === 'REDUCED_HOURS') && c.date) await this.svc.recompute(c.employeeId, c.date, c.date);
     return { id, status: wf.status, currentStep: wf.currentStep };
   }
 }

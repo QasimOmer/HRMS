@@ -23,6 +23,7 @@ import { like, offset, one, page } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { DbService } from '../../db/db.service';
 import { auditLogs, employees, refreshTokens, rolePermissions, userRoles, users } from '../../db/schema';
+import { AccessService } from '../auth/access.service';
 import { AuthService } from '../auth/auth.service';
 
 const auditQuery = pagination.extend({
@@ -39,6 +40,7 @@ export class AccessController {
   constructor(
     private readonly db: DbService,
     private readonly auth: AuthService,
+    private readonly access: AccessService,
   ) {}
 
   private async targetUser(id: string) {
@@ -48,6 +50,7 @@ export class AccessController {
     // You may only manage someone whose every role you are allowed to grant.
     const actor = currentUser();
     if (roles.some((r) => !canAssignRole(actor.roles, r))) throw forbidden('You cannot manage this account');
+    this.access.forget(id); // role / status / password changes apply on the next request
     return { ...u, roles };
   }
 
@@ -104,7 +107,7 @@ export class AccessController {
     if (changed.some((r) => !canAssignRole(actor.roles, r))) throw forbidden('You cannot grant or revoke that role');
     if (target.roles.includes('SUPER_ADMIN') && !next.includes('SUPER_ADMIN')) {
       const [{ n }] = (await tx.select({ n: sql<number>`count(*)::int` }).from(userRoles).where(eq(userRoles.role, 'SUPER_ADMIN'))) as [{ n: number }];
-      if (n <= 1) throw badRequest('There must be at least one Super Admin');
+      if (n <= 1) throw badRequest('There must be at least one Company Admin');
     }
     await tx.delete(userRoles).where(eq(userRoles.userId, id));
     await tx.insert(userRoles).values(next.map((role) => ({ tenantId: actor.tenantId, userId: id, role })));
@@ -122,9 +125,9 @@ export class AccessController {
     return { id, status: body.status };
   }
 
-  /** Operations/HR: email a password reset link (A1). */
+  /** Operations/HR, or anyone who can edit employees: email a password reset link (A1). */
   @Post('users/:id/reset-link')
-  @RequireAny(P.USERS_MANAGE_ACCESS)
+  @RequireAny(P.USERS_MANAGE_ACCESS, P.EMPLOYEES_MANAGE)
   @Audit('access.reset_link_sent', 'user')
   async resetLink(@Param('id', ParseUUIDPipe) id: string) {
     const t = await this.targetUser(id);
@@ -132,9 +135,9 @@ export class AccessController {
     return { id, sent: true };
   }
 
-  /** Operations/HR: set a password directly; user must change it at next sign-in (A1). */
+  /** Operations/HR, or anyone who can edit employees: set a password directly (A1). */
   @Post('users/:id/password')
-  @RequireAny(P.USERS_MANAGE_ACCESS)
+  @RequireAny(P.USERS_MANAGE_ACCESS, P.EMPLOYEES_MANAGE)
   @Audit('access.password_set', 'user')
   async setPassword(@Param('id', ParseUUIDPipe) id: string, @Body(zp(adminSetPasswordSchema)) body: z.infer<typeof adminSetPasswordSchema>) {
     if (id === currentUser().userId) throw badRequest('Use "Change password" for your own account');
@@ -175,8 +178,9 @@ export class AccessController {
   @Audit('access.role_permissions_changed', 'role')
   async setRolePermissions(@Param('role') role: string, @Body(zp(rolePermissionsSchema)) body: z.infer<typeof rolePermissionsSchema>) {
     if (!ROLES.includes(role as Role)) throw badRequest('Unknown role');
-    if (role === 'SUPER_ADMIN') throw badRequest('Super Admin always has full access');
+    if (role === 'SUPER_ADMIN') throw badRequest('The Company Admin always has full access');
     const actor = currentUser();
+    this.access.forgetAll();
     // Nobody can grant a permission they don't hold themselves (prevents privilege escalation).
     const missing = body.permissions.filter((p) => !actor.permissions.has(p as never));
     if (missing.length) throw forbidden(`You cannot grant permissions you don't have: ${missing.join(', ')}`);
@@ -201,7 +205,9 @@ export class AccessController {
     if (q.to) conds.push(lte(auditLogs.createdAt, new Date(`${q.to}T23:59:59Z`)));
     if (q.search) conds.push(or(ilike(auditLogs.actorLabel, like(q.search)), ilike(auditLogs.path, like(q.search)))!);
     const where = conds.length ? and(...conds) : undefined;
-    const items = await tx.select().from(auditLogs).where(where).orderBy(desc(auditLogs.id)).limit(q.pageSize).offset(offset(q));
+    const rows = await tx.select({ a: auditLogs, email: users.email }).from(auditLogs).leftJoin(users, eq(users.id, auditLogs.actorUserId)).where(where).orderBy(desc(auditLogs.id)).limit(q.pageSize).offset(offset(q));
+    // Older entries (e.g. sign-outs) stored only the user id: show their email instead of "system".
+    const items = rows.map((r) => ({ ...r.a, actorLabel: r.a.actorLabel ?? r.email ?? null }));
     const [{ n }] = (await tx.select({ n: sql<number>`count(*)::int` }).from(auditLogs).where(where)) as [{ n: number }];
     return page(items, n, q);
   }

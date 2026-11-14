@@ -33,32 +33,46 @@ export class LeaveService {
   async balances(employeeId: string, year: number) {
     const tx = this.db.tx;
     const types = await tx.select().from(leaveTypes).where(eq(leaveTypes.isActive, true)).orderBy(leaveTypes.code);
+    const [emp] = await tx.select({ joiningDate: employees.joiningDate }).from(employees).where(eq(employees.id, employeeId));
+    const joinYear = emp ? Number(emp.joiningDate.slice(0, 4)) : year;
+    // Load every year up to `year` once so carry-forward (LEV-09) can be chained.
     const allocs = await tx
-      .select({ typeId: leaveAllocations.leaveTypeId, days: sql<number>`sum(${leaveAllocations.days})::float` })
+      .select({ typeId: leaveAllocations.leaveTypeId, year: leaveAllocations.year, days: sql<number>`sum(${leaveAllocations.days})::float` })
       .from(leaveAllocations)
-      .where(and(eq(leaveAllocations.employeeId, employeeId), eq(leaveAllocations.year, year)))
-      .groupBy(leaveAllocations.leaveTypeId);
+      .where(and(eq(leaveAllocations.employeeId, employeeId), lte(leaveAllocations.year, year)))
+      .groupBy(leaveAllocations.leaveTypeId, leaveAllocations.year);
     const usage = await tx
       .select({
         typeId: leaveRequests.leaveTypeId,
+        year: sql<number>`extract(year from ${leaveRequests.startDate})::int`,
         status: leaveRequests.status,
         days: sql<number>`sum(${leaveRequests.days})::float`,
       })
       .from(leaveRequests)
-      .where(and(eq(leaveRequests.employeeId, employeeId), sql`extract(year from ${leaveRequests.startDate}) = ${year}`, inArray(leaveRequests.status, ['PENDING', 'APPROVED'])))
-      .groupBy(leaveRequests.leaveTypeId, leaveRequests.status);
+      .where(and(eq(leaveRequests.employeeId, employeeId), sql`extract(year from ${leaveRequests.startDate}) <= ${year}`, inArray(leaveRequests.status, ['PENDING', 'APPROVED'])))
+      .groupBy(leaveRequests.leaveTypeId, sql`extract(year from ${leaveRequests.startDate})`, leaveRequests.status);
     const ot = await this.attendance.overtimeBalance(employeeId);
 
+    const usedIn = (typeId: string, y: number, status: 'APPROVED' | 'PENDING') => usage.find((u) => u.typeId === typeId && u.year === y && u.status === status)?.days ?? 0;
+    const adjIn = (typeId: string, y: number) => allocs.find((a) => a.typeId === typeId && a.year === y)?.days ?? 0;
+
     return types.map((t) => {
-      const used = usage.find((u) => u.typeId === t.id && u.status === 'APPROVED')?.days ?? 0;
-      const pending = usage.find((u) => u.typeId === t.id && u.status === 'PENDING')?.days ?? 0;
+      const used = usedIn(t.id, year, 'APPROVED');
+      const pending = usedIn(t.id, year, 'PENDING');
       if (t.derivedFromOvertime) {
         // Compensation leave comes from approved overtime (C3); pending/used is already netted out.
         const available = ot.dayMinutes ? Math.floor((ot.availableMinutes / ot.dayMinutes) * 2) / 2 : 0;
-        return { leaveTypeId: t.id, code: t.code, name: t.name, color: t.color, isPaid: t.isPaid, derivedFromOvertime: true, allocated: round2(available + used + pending), used, pending, available };
+        return { leaveTypeId: t.id, code: t.code, name: t.name, color: t.color, isPaid: t.isPaid, derivedFromOvertime: true, allocated: round2(available + used + pending), carriedForward: 0, used, pending, available };
       }
-      const allocated = t.annualAllowance + (allocs.find((a) => a.typeId === t.id)?.days ?? 0);
-      return { leaveTypeId: t.id, code: t.code, name: t.name, color: t.color, isPaid: t.isPaid, derivedFromOvertime: false, allocated, used, pending, available: round2(allocated - used - pending) };
+      // LEV-09: unused days roll into the next year when HR enables it, up to HR's limit.
+      let carried = 0;
+      for (let y = joinYear; y < year; y++) {
+        const left = t.annualAllowance + adjIn(t.id, y) + carried - usedIn(t.id, y, 'APPROVED') - usedIn(t.id, y, 'PENDING');
+        carried = t.carryForward ? Math.max(0, Math.min(left, t.carryForwardMax ?? Infinity)) : 0;
+      }
+      carried = round2(carried);
+      const allocated = round2(t.annualAllowance + adjIn(t.id, year) + carried);
+      return { leaveTypeId: t.id, code: t.code, name: t.name, color: t.color, isPaid: t.isPaid, derivedFromOvertime: false, allocated, carriedForward: carried, used, pending, available: round2(allocated - used - pending) };
     });
   }
 

@@ -2,10 +2,39 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "db",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\npm.cmd",
+      "runtimeArgs": ["run", "db:start"],
+      "port": 5433
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\npm.cmd",
+      "runtimeArgs": ["run", "dev:api"],
+      "port": 4000
+    },
+    {
       "name": "web",
       "runtimeExecutable": "C:\\Program Files\\nodejs\\npm.cmd",
-      "runtimeArgs": ["run", "dev", "-w", "@hrms/web"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "-w",
+        "@hrms/web"
+      ],
       "port": 3000
+    },
+    {
+      "name": "web-prod",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": [
+        "node_modules/next/dist/bin/next",
+        "start",
+        "apps/web",
+        "-p",
+        "3100"
+      ],
+      "port": 3100
     }
   ]
 }

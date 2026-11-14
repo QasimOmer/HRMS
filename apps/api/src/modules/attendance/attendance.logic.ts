@@ -5,7 +5,6 @@ export interface Schedule {
   startTime: string; // HH:MM
   endTime: string;
   breakMinutes: number;
-  graceMinutes: number;
   workingDays: number[];
 }
 
@@ -25,6 +24,11 @@ export interface DayInput {
   leave: 'NONE' | 'FULL' | 'HALF';
   /** Approved half-day compensation using overtime (C2). */
   compensationHalfDay: boolean;
+  /**
+   * OVT-07: approved overtime adjusted against this day – the employee needs this many fewer
+   * minutes (they may arrive later or leave earlier by that amount).
+   */
+  reducedMinutes?: number;
   overtimeThresholdMinutes: number;
   /** Date is today or later – no punches yet doesn't mean absent. */
   isFuture: boolean;
@@ -62,6 +66,8 @@ export function computeDay(input: DayInput): DayResult {
   let scheduled = workingDay ? scheduledNetMinutes(s) : 0;
   if (input.leave === 'FULL') scheduled = 0;
   if (input.leave === 'HALF' || input.compensationHalfDay) scheduled = Math.round(scheduled / 2);
+  const reduced = workingDay ? Math.min(scheduled, Math.max(0, input.reducedMinutes ?? 0)) : 0;
+  scheduled -= reduced;
 
   const empty: DayResult = {
     checkIn: null,
@@ -110,12 +116,12 @@ export function computeDay(input: DayInput): DayResult {
 
   if (!checkOut || checkOut <= checkIn) {
     // Still at work (or a single punch).
-    const late = workingDay ? Math.max(0, localMinutes(checkIn, tz) - timeToMinutes(s.startTime)) : 0;
-    const isLate = late > s.graceMinutes;
+    const late = workingDay ? Math.max(0, localMinutes(checkIn, tz) - timeToMinutes(s.startTime) - reduced) : 0;
+    const isLate = late > 0; // ATT-03: no grace period
     return {
       ...empty,
       checkIn,
-      lateMinutes: isLate ? late : 0,
+      lateMinutes: late,
       status: input.isFuture ? (isLate ? 'LATE' : 'PRESENT') : 'LATE', // missing check-out = irregular
     };
   }
@@ -125,8 +131,9 @@ export function computeDay(input: DayInput): DayResult {
   const skippedBreak = workingDay && s.breakMinutes > 0 && breakMinutes === 0;
 
   const startMin = timeToMinutes(s.startTime);
-  const late = workingDay ? Math.max(0, localMinutes(checkIn, tz) - startMin) : 0;
-  const isLate = late > s.graceMinutes;
+  const late = workingDay ? Math.max(0, localMinutes(checkIn, tz) - startMin - reduced) : 0;
+  // ATT-03: no grace period – any minute after shift start is late, and the minutes are stored.
+  const isLate = late > 0;
 
   // Leaving before the scheduled end is fine when the required net minutes were worked
   // (e.g. skipped break → leave early by the break length).
@@ -149,7 +156,7 @@ export function computeDay(input: DayInput): DayResult {
     breakMinutes,
     workedMinutes: worked,
     scheduledMinutes: scheduled,
-    lateMinutes: isLate ? late : 0,
+    lateMinutes: late,
     overtimeMinutes: overtime,
     skippedBreak,
     earlyLeave,

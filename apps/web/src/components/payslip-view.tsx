@@ -20,7 +20,7 @@ export interface Payslip {
   gross: number;
   net: number;
   lines: PayslipLine[];
-  snapshot: { fullName?: string; employeeCode?: string; designation?: string; departmentName?: string; level?: string; foodDays?: number; provisional?: boolean };
+  snapshot: { fullName?: string; employeeCode?: string; designation?: string; departmentName?: string; level?: string; foodDays?: number; lateMinutes?: number; provisional?: boolean };
 }
 
 /** Web view of a salary slip (D1) with PDF download. */
@@ -43,7 +43,7 @@ export function PayslipView({ slip, currency, onRemoveLine }: { slip: Payslip; c
         <div>
           <p className="text-lg font-semibold">{s.fullName}</p>
           <p className="text-sm text-muted-foreground">{s.employeeCode} · {s.designation} · {s.departmentName} · {s.level}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{monthLabel(slip.period)} · paid hours {hours(Math.min(slip.payableMinutes, slip.scheduledMinutes))} of {hours(slip.scheduledMinutes)}{s.provisional ? ' · provisional (month not finished)' : ''}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{monthLabel(slip.period)} · paid hours {hours(Math.min(slip.payableMinutes, slip.scheduledMinutes))} of {hours(slip.scheduledMinutes)}{s.lateMinutes ? ` · ${s.lateMinutes} min late this month` : ''}{s.provisional ? ' · provisional (month not finished)' : ''}</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => downloadFile(`/payroll/payslips/${slip.id}/pdf`, `salary-slip-${slip.period}.pdf`).catch((e) => toast.error(e.message))}>
           <Download className="h-4 w-4" /> PDF

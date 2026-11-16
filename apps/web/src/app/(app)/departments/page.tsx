@@ -8,19 +8,22 @@ import { useQueryClient } from '@tanstack/react-query';
 import { EmployeeSelect, useDepartments, useLevels, type Department, type Level } from '@/components/domain';
 import { Button } from '@/components/ui/button';
 import { Badge, Card, CardHeader, EmptyState, LoadingRows, PageHeader } from '@/components/ui/display';
-import { Checkbox, Field, FormGrid, Input, Textarea } from '@/components/ui/form';
+import { Checkbox, Field, FormGrid, Input, Select, Textarea } from '@/components/ui/form';
 import { Dialog } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
 import { cn, money } from '@/lib/format';
+import { useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
 
 function DepartmentDialog({ dept, open, onOpenChange }: { dept?: Department; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient();
   const form = useZodForm(departmentSchema);
+  const { data: schedules } = useApi<{ id: string; name: string; startTime: string; endTime: string }[]>(open ? '/work-schedules' : null);
   useEffect(() => {
-    if (open) form.reset(dept ? { name: dept.name, code: dept.code, headEmployeeId: dept.headEmployeeId, foodAllowanceEnabled: dept.foodAllowanceEnabled, paidOvertimeEnabled: dept.paidOvertimeEnabled, isActive: dept.isActive } : { name: '', code: '', headEmployeeId: null, foodAllowanceEnabled: false, paidOvertimeEnabled: false, isActive: true });
+    if (open) form.reset(dept ? { name: dept.name, code: dept.code, headEmployeeId: dept.headEmployeeId, foodAllowanceEnabled: dept.foodAllowanceEnabled, paidOvertimeEnabled: dept.paidOvertimeEnabled, workScheduleId: dept.workScheduleId, isActive: dept.isActive } : { name: '', code: '', headEmployeeId: null, foodAllowanceEnabled: false, paidOvertimeEnabled: false, workScheduleId: null, isActive: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, dept]);
   const onSubmit = form.handleSubmit(async (v) => {
@@ -35,13 +38,19 @@ function DepartmentDialog({ dept, open, onOpenChange }: { dept?: Department; ope
     }
   });
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={dept ? 'Edit department' : 'New department'} footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={onSubmit} loading={form.formState.isSubmitting}>Save</Button></>}>
+    <Dialog open={open} onOpenChange={onOpenChange} title={dept ? 'Edit department' : 'New department'} footer={<>{dept && <span className="mr-auto"><DeleteButton path={`/departments/${dept.id}`} what={`the ${dept.name} department`} invalidate={['/departments', '/levels']} onDeleted={() => onOpenChange(false)} detail="Only possible if nobody ever belonged to it. Its levels are deleted too. Otherwise untick Active." /></span>}<Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={onSubmit} loading={form.formState.isSubmitting}>Save</Button></>}>
       <div className="space-y-4">
         <FormGrid>
           <Field label="Name" required error={fieldError(form, 'name')}>{(a) => <Input {...a} {...form.register('name')} />}</Field>
           <Field label="Code" required error={fieldError(form, 'code')} hint="e.g. SALES">{(a) => <Input {...a} {...form.register('code')} />}</Field>
         </FormGrid>
-        <Field label="Head of department">{(a) => <EmployeeSelect {...a} placeholder="None" {...form.register('headEmployeeId', { setValueAs: (v) => (v === '' ? null : v) })} />}</Field>
+        <Field label="Head of department">{(a) => <EmployeeSelect {...a} placeholder="None" value={(form.watch('headEmployeeId') as string | null | undefined) ?? ''} onChange={(e) => form.setValue('headEmployeeId', (e.target.value || null) as never, { shouldDirty: true, shouldValidate: true })} />}</Field>
+        <Field label="Shift hours" hint="Late minutes and overtime are counted from this shift. No grace period.">{(a) => (
+          <Select {...a} {...form.register('workScheduleId', { setValueAs: (v) => (v === '' ? null : v) })}>
+            <option value="">Company default</option>
+            {schedules?.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.startTime.slice(0, 5)}–{s.endTime.slice(0, 5)})</option>)}
+          </Select>
+        )}</Field>
         <div className="flex flex-col gap-2">
           <Checkbox label="Food allowance enabled (D4)" {...form.register('foodAllowanceEnabled')} />
           <Checkbox label="Paid overtime compensation available (C2)" {...form.register('paidOvertimeEnabled')} />
@@ -73,7 +82,7 @@ function LevelDialog({ departmentId, level, open, onOpenChange, currency }: { de
   const num = { setValueAs: (v: string) => (v === '' ? undefined : Number(v)) };
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={level ? `Edit ${level.code}` : 'Add level'} description={`Salaries in ${currency}. Changing the default does not change existing employees' salaries.`}
-      footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={onSubmit} loading={form.formState.isSubmitting}>Save</Button></>}>
+      footer={<>{level && <span className="mr-auto"><DeleteButton path={`/levels/${level.id}`} what={`level ${level.code}`} invalidate={['/levels', '/departments']} onDeleted={() => onOpenChange(false)} detail="Only possible if no employee has ever held this level. Otherwise untick Active." /></span>}<Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={onSubmit} loading={form.formState.isSubmitting}>Save</Button></>}>
       <div className="space-y-4">
         <FormGrid>
           <Field label="Code" required error={fieldError(form, 'code')} hint="L0, L1, …">{(a) => <Input {...a} disabled={!!level} {...form.register('code')} />}</Field>

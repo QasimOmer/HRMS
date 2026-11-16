@@ -65,7 +65,7 @@ export const ATTENDANCE_COLORS: Record<AttendanceStatus, string> = {
 export const PUNCH_TYPES = ['IN', 'OUT', 'BREAK_START', 'BREAK_END'] as const;
 export type PunchType = (typeof PUNCH_TYPES)[number];
 
-export const COMPENSATION_TYPES = ['PAID', 'HALF_DAY'] as const;
+export const COMPENSATION_TYPES = ['PAID', 'HALF_DAY', 'REDUCED_HOURS'] as const;
 export type CompensationType = (typeof COMPENSATION_TYPES)[number];
 
 export const POLICY_CATEGORIES = [

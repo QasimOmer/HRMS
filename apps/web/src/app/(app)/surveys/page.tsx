@@ -12,16 +12,34 @@ import { Badge, Card, CardHeader, EmptyState, PageHeader, StatusBadge } from '@/
 import { Checkbox, Field, FormGrid, Input, Select, Textarea } from '@/components/ui/form';
 import { Dialog, Tabs } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
-import { api } from '@/lib/api';
+import { api, qs } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { date, humanize } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
 
 interface Q { id: string; type: (typeof SURVEY_QUESTION_TYPES)[number]; label: string; options?: string[]; required: boolean }
 interface Survey { id: string; title: string; description: string | null; kind: string; audience: string; audienceId: string | null; anonymous: boolean; questions: Q[]; status: string; createdAt: string; responses?: number }
 interface Team { id: string; name: string }
 
 const newQ = (): Q => ({ id: Math.random().toString(36).slice(2, 10), type: 'RATING', label: '', required: true });
+
+/** Who the survey will go to (active members, from the server); a team of one shows that one person. */
+function AudiencePreview({ audience, audienceId }: { audience: string; audienceId: string | null }) {
+  const ready = audience === 'ALL' || !!audienceId;
+  const { data, isLoading, error } = useApi<{ count: number; members: { id: string; fullName: string; designation: string }[] }>(ready ? `/surveys/audience${qs({ audience, audienceId })}` : null);
+  if (!ready) return null;
+  if (error) return <p className="text-sm text-danger">{error.message}</p>;
+  if (isLoading || !data) return <p className="text-sm text-muted-foreground">Finding members…</p>;
+  if (!data.count) return <p className="rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">No active members to send this survey to yet.</p>;
+  const shown = data.members.slice(0, 12);
+  return (
+    <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+      <p className="font-medium">{data.count === 1 ? '1 person' : `${data.count} people`} will receive this survey</p>
+      <p className="mt-1 text-muted-foreground">{shown.map((m) => m.fullName).join(', ')}{data.count > shown.length ? ` and ${data.count - shown.length} more` : ''}</p>
+    </div>
+  );
+}
 
 function Builder({ open, onOpenChange, editing }: { open: boolean; onOpenChange: (o: boolean) => void; editing?: Survey }) {
   const { can, me } = useAuth();
@@ -67,6 +85,7 @@ function Builder({ open, onOpenChange, editing }: { open: boolean; onOpenChange:
           {s.audience === 'DEPARTMENT' && <Field label="Department">{(a) => <DepartmentSelect {...a} value={s.audienceId ?? ''} onChange={(e) => setS({ ...s, audienceId: e.target.value || null })} />}</Field>}
           {s.audience === 'TEAM' && <Field label="Team">{(a) => <Select {...a} value={s.audienceId ?? ''} onChange={(e) => setS({ ...s, audienceId: e.target.value || null })}><option value="">Select…</option>{myTeams?.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</Select>}</Field>}
         </FormGrid>
+        <AudiencePreview audience={s.audience} audienceId={s.audienceId} />
         <Checkbox label="Anonymous responses (respondents' names are never shown)" checked={s.anonymous} onChange={(e) => setS({ ...s, anonymous: e.target.checked })} />
         <div className="space-y-3">
           <p className="text-sm font-medium">Questions</p>
@@ -140,6 +159,7 @@ export default function SurveysPage() {
                     {s.status !== 'OPEN' && <Button size="sm" onClick={() => openS.mutate(s.id)}>Open</Button>}
                     {s.status === 'OPEN' && <Button size="sm" variant="outline" onClick={() => closeS.mutate(s.id)}>Close</Button>}
                     <Link href={`/surveys/${s.id}/results`}><Button size="sm" variant="ghost"><BarChart3 className="h-3.5 w-3.5" /> Results</Button></Link>
+                    <DeleteButton iconOnly path={`/surveys/${s.id}`} what={`the survey "${s.title}"`} invalidate={['/surveys']} detail="The survey and all its responses are deleted. This cannot be undone." />
                   </div>
                 ) },
               ]} />

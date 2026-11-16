@@ -14,6 +14,7 @@ import { useAuth } from '@/lib/auth';
 import { fieldError, useZodForm } from '@/lib/form';
 import { dateTime, money, monthLabel, todayLocal } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
 
 interface Run { id: string; period: string; status: string; currentStep: string | null; totalGross: number; totalNet: number; employeeCount: number; processedAt: string | null; canDecide: boolean }
 interface Comp { id: string; kind: string; code: string; label: string; amount: number; isPercentOfBasic: boolean; employeeName: string | null; departmentName: string | null; isActive: boolean }
@@ -34,6 +35,7 @@ function Runs() {
         { key: 'g', header: 'Gross', hideOnMobile: true, cell: (r) => <span className="tabular-nums">{money(r.totalGross, me?.tenant.currency)}</span> },
         { key: 'n', header: 'Net pay', cell: (r) => <span className="font-medium tabular-nums">{money(r.totalNet, me?.tenant.currency)}</span> },
         { key: 's', header: 'Status', cell: (r) => <div className="flex items-center gap-2"><StatusBadge status={r.status} />{r.status === 'PENDING_APPROVAL' && <Badge tone="warning">{r.currentStep === 'HR' ? 'HR' : 'Operations'}</Badge>}{r.canDecide && <Badge tone="primary">your turn</Badge>}</div> },
+        { key: 'del', header: <span className="sr-only">Delete</span>, cell: (r) => (['DRAFT', 'REJECTED'].includes(r.status) ? <DeleteButton iconOnly path={`/payroll/runs/${r.id}`} what={`the draft payroll for ${monthLabel(r.period)}`} invalidate={['/payroll']} /> : null) },
         { key: 'd', header: 'Processed', hideOnMobile: true, cell: (r) => <span className="text-muted-foreground">{dateTime(r.processedAt)}</span> },
       ]} />
       <Dialog open={open} onOpenChange={setOpen} title="Process payroll" description="Calculates every employee's salary from working hours, allowances, deductions, loans and incentives. You can review and adjust before submitting." size="sm"
@@ -59,7 +61,7 @@ function Components() {
         { key: 'k', header: 'Type', cell: (c) => <Badge tone={c.kind === 'ALLOWANCE' ? 'success' : 'danger'}>{c.kind.toLowerCase()}</Badge> },
         { key: 'a', header: 'Amount', cell: (c) => (c.isPercentOfBasic ? `${c.amount}% of basic` : money(c.amount, me?.tenant.currency)) },
         { key: 's', header: 'Applies to', cell: (c) => c.employeeName ?? c.departmentName ?? 'Everyone' },
-        { key: 'x', header: '', cell: (c) => (!c.isActive ? <Badge>inactive</Badge> : null) },
+        { key: 'x', header: '', cell: (c) => <div className="flex items-center justify-end gap-1">{!c.isActive && <Badge>inactive</Badge>}<DeleteButton iconOnly path={`/payroll/components/${c.id}`} what={`"${c.label}"`} invalidate={['/payroll/components']} /></div> },
       ]} />
       <Dialog open={open} onOpenChange={setOpen} title="Add allowance or deduction" footer={<><Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button loading={add.isPending} onClick={form.handleSubmit((v) => add.mutate(v))}>Add</Button></>}>
         <div className="space-y-4">
@@ -74,7 +76,7 @@ function Components() {
           </FormGrid>
           <FormGrid>
             <Field label="Only for department">{(a) => <DepartmentSelect {...a} includeAll="All departments" {...form.register('departmentId', nul)} />}</Field>
-            <Field label="Only for employee">{(a) => <EmployeeSelect {...a} placeholder="All employees" {...form.register('employeeId', nul)} />}</Field>
+            <Field label="Only for employee">{(a) => <EmployeeSelect {...a} placeholder="All employees" value={(form.watch('employeeId') as string | null | undefined) ?? ''} onChange={(e) => form.setValue('employeeId', (e.target.value || null) as never, { shouldDirty: true, shouldValidate: true })} />}</Field>
           </FormGrid>
         </div>
       </Dialog>

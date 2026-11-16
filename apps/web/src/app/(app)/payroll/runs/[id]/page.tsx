@@ -1,14 +1,14 @@
 'use client';
 
 import { PERMISSIONS as P } from '@hrms/shared';
-import { ArrowLeft, Banknote, RefreshCw, Send } from 'lucide-react';
+import { ArrowLeft, Banknote, Lock, RefreshCw, Send, Unlock } from 'lucide-react';
 import Link from 'next/link';
 import { use, useState } from 'react';
 import { DecisionButtons } from '@/components/domain';
 import { PayslipView, type Payslip } from '@/components/payslip-view';
 import { Button } from '@/components/ui/button';
 import { Badge, Card, CardBody, CardHeader, ErrorState, PageHeader, Skeleton, Stat, StatusBadge } from '@/components/ui/display';
-import { Field, FormGrid, Input, Select } from '@/components/ui/form';
+import { Field, FormGrid, Input, Select, Textarea } from '@/components/ui/form';
 import { Dialog, useConfirm } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
 import { useAuth } from '@/lib/auth';
@@ -16,7 +16,7 @@ import { dateTime, hours, money, monthLabel } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
 
 interface RunDetail {
-  id: string; period: string; status: string; currentStep: string | null; totalGross: number; totalNet: number; employeeCount: number; canDecide: boolean;
+  id: string; period: string; status: string; currentStep: string | null; totalGross: number; totalNet: number; employeeCount: number; canDecide: boolean; reopenedAt: string | null; reopenReason: string | null;
   history: { id: string; step: string | null; action: string; comment: string | null; createdAt: string; actorEmail: string | null }[];
   payslips: (Payslip & { employeeId: string; fullName: string; employeeCode: string; departmentName: string })[];
 }
@@ -34,6 +34,9 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   const recalc = useAction('post', `${key}/recalculate`, { invalidate: inv, success: 'Recalculated with the latest attendance and data' });
   const submit = useAction('post', `${key}/submit`, { invalidate: inv, success: 'Submitted for HR approval' });
   const paid = useAction('post', `${key}/mark-paid`, { invalidate: inv, success: 'Marked as paid' });
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const reopen = useAction('post', `${key}/reopen`, { invalidate: inv, success: 'Payroll reopened as a draft', body: () => ({ reason }), onSuccess: () => { setReopenOpen(false); setReason(''); } });
   const addAdj = useAction('post', () => `/payroll/payslips/${slipId}/adjustments`, { invalidate: inv, success: 'Adjustment added', body: () => adj, onSuccess: () => setAdj({ kind: 'ALLOWANCE', label: '', amount: 0 }) });
   const rmAdj = useAction<number>('del', (i) => `/payroll/payslips/${slipId}/adjustments/${i}`, { invalidate: inv, success: 'Adjustment removed' });
 
@@ -54,8 +57,15 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           {editable && <Button loading={submit.isPending} onClick={async () => { if (await confirm({ title: 'Submit payroll for approval?', body: 'It will be recalculated one final time, then go to HR and Operations for approval. Adjustments are locked while it is under review.' })) submit.mutate(undefined); }}><Send className="h-4 w-4" /> Submit for approval</Button>}
           {run.canDecide && <DecisionButtons size="md" path={`${key}/decision`} invalidate={inv} />}
           {run.status === 'APPROVED' && can(P.PAYROLL_PROCESS) && <Button variant="success" loading={paid.isPending} onClick={() => paid.mutate(undefined)}><Banknote className="h-4 w-4" /> Mark as paid</Button>}
+          {run.status === 'APPROVED' && can(P.PAYROLL_PROCESS) && <Button variant="outline" onClick={() => setReopenOpen(true)}><Unlock className="h-4 w-4" /> Reopen</Button>}
         </>}
       />
+      {['APPROVED', 'PAID'].includes(run.status) && <p className="mb-4 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"><Lock className="h-4 w-4" /> This month is locked. Changes require HR to reopen it (recorded in the audit log).</p>}
+      {run.reopenedAt && <p className="mb-4 rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-sm">Reopened {dateTime(run.reopenedAt)}: {run.reopenReason}</p>}
+      <Dialog open={reopenOpen} onOpenChange={setReopenOpen} title="Reopen approved payroll?" description="Loan instalments booked by this run are reversed and the run returns to draft. It must be approved by HR and Operations again."
+        footer={<><Button variant="outline" onClick={() => setReopenOpen(false)}>Cancel</Button><Button variant="danger" disabled={reason.trim().length < 5} loading={reopen.isPending} onClick={() => reopen.mutate(undefined)}>Reopen</Button></>}>
+        <Field label="Reason" required hint="Saved in the audit log">{(a) => <Textarea {...a} rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+      </Dialog>
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         <Stat label="Employees" value={run.employeeCount} />
         <Stat label="Total gross" value={money(run.totalGross, currency)} />

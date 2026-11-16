@@ -1,8 +1,10 @@
+import { NotFoundException } from '@nestjs/common';
 import { Injectable, StreamableFile } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { createReadStream } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID, createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { config } from '../config';
 import { currentUser } from '../common/context';
@@ -37,14 +39,24 @@ export interface UploadedFileLike {
 
 /**
  * File storage with content sniffing (the client-supplied MIME type is ignored).
- * Local disk in development; swap `write`/`open` for S3 in production.
+ * STORAGE_DRIVER=disk keeps files under STORAGE_DIR; STORAGE_DRIVER=db keeps the bytes in `files.content`
+ * (needed on Vercel, whose disk is read-only and not shared between instances).
  */
+const DB_PREFIX = 'db:';
+
 @Injectable()
 export class StorageService {
   constructor(private readonly db: DbService) {}
 
   private root() {
     return resolve(config().STORAGE_DIR);
+  }
+
+  /** Is the stored file actually available? (A disk record can outlive its file, e.g. after a storage mishap.) */
+  isOnDisk(storageKey: string): boolean {
+    if (storageKey.startsWith(DB_PREFIX)) return true; // bytes live in the same row
+    const abs = resolve(this.root(), storageKey);
+    return abs.startsWith(this.root() + sep) && existsSync(abs);
   }
 
   /** `anonymous` skips recording the uploader (F3 anonymous complaints). */
@@ -59,17 +71,21 @@ export class StorageService {
     const user = currentUser();
     const now = new Date();
     const key = `${user.tenantId}/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/${randomUUID()}${sig.ext[0]}`;
-    const abs = resolve(this.root(), key);
-    if (!abs.startsWith(this.root() + sep)) throw badRequest('Invalid storage path');
-    await mkdir(resolve(abs, '..'), { recursive: true });
-    await writeFile(abs, file.buffer, { flag: 'wx' });
+    const inDb = config().STORAGE_DRIVER === 'db';
+    if (!inDb) {
+      const abs = resolve(this.root(), key);
+      if (!abs.startsWith(this.root() + sep)) throw badRequest('Invalid storage path');
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, file.buffer, { flag: 'wx' });
+    }
 
     const safeName = file.originalname.replace(/[^\w.\- ()]/g, '_').slice(0, 150) || `file${sig.ext[0]}`;
     const [row] = await this.db.tx
       .insert(files)
       .values({
         tenantId: user.tenantId,
-        storageKey: key,
+        storageKey: inDb ? `${DB_PREFIX}${key}` : key,
+        content: inDb ? file.buffer : null,
         originalName: extname(safeName) ? safeName : `${safeName}${sig.ext[0]}`,
         mimeType: sig.mime,
         size: file.size,
@@ -77,19 +93,23 @@ export class StorageService {
         uploadedByUserId: opts.anonymous ? null : user.userId,
       })
       .returning();
-    return row!;
+    const { content: _bytes, ...meta } = row!; // never hand the file bytes back to callers/responses
+    return meta;
   }
 
   /** Stream a file. Callers MUST authorise access before calling. */
   async stream(fileId: string, disposition: 'inline' | 'attachment' = 'inline'): Promise<StreamableFile> {
     const [f] = await this.db.tx.select().from(files).where(eq(files.id, fileId)).limit(1);
     if (!f) throw notFound('File');
+    const opts = { type: f.mimeType, length: f.size, disposition: `${disposition}; filename="${encodeURIComponent(f.originalName)}"` };
+    if (f.storageKey.startsWith(DB_PREFIX)) {
+      if (!f.content) throw new NotFoundException({ message: 'This file is missing from storage. Please upload it again.', code: 'FILE_MISSING' });
+      return new StreamableFile(f.content, { ...opts, length: f.content.length });
+    }
     const abs = resolve(this.root(), f.storageKey);
     if (!abs.startsWith(this.root() + sep)) throw notFound('File');
-    return new StreamableFile(createReadStream(abs), {
-      type: f.mimeType,
-      length: f.size,
-      disposition: `${disposition}; filename="${encodeURIComponent(f.originalName)}"`,
-    });
+    // The record exists but the file is gone from storage: say so (a stream error would only give "Bad Request").
+    if (!existsSync(abs)) throw new NotFoundException({ message: 'This file is missing from storage. Please upload it again.', code: 'FILE_MISSING' });
+    return new StreamableFile(createReadStream(abs), opts);
   }
 }

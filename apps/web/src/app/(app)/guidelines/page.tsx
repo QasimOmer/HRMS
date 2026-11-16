@@ -1,7 +1,7 @@
 'use client';
 
 import { PERMISSIONS as P } from '@hrms/shared';
-import { CheckCircle2, Pencil } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Pencil, ShieldAlert } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -32,6 +32,28 @@ function Markdown({ text }: { text: string }) {
 }
 
 /** F2 – community guidelines; acceptance required before using the community. */
+/** Your own record: warnings you've had in the last 12 months (F2). */
+function MyStanding() {
+  const { data } = useApi<{ count: number; warningsAllowed: number; items: { reason: string; level: number; createdAt: string }[] }>('/community/my-standing');
+  if (!data?.count) return null;
+  const disciplinary = data.count > data.warningsAllowed;
+  return (
+    <div role="status" className={`mb-6 flex gap-3 rounded-lg border px-4 py-3 text-sm ${disciplinary ? 'border-danger/30 bg-danger-soft text-danger' : 'border-warning/30 bg-warning-soft text-warning'}`}>
+      {disciplinary ? <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" aria-hidden /> : <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />}
+      <div>
+        <p className="font-medium">
+          {disciplinary
+            ? `You have ${data.count} guideline violations in the last 12 months. HR will follow up with disciplinary action.`
+            : `You have ${data.count} of ${data.warningsAllowed} warnings in the last 12 months. ${data.count >= data.warningsAllowed ? 'One more removal leads to disciplinary action.' : ''}`}
+        </p>
+        <ul className="mt-1 space-y-0.5 text-xs opacity-90">
+          {data.items.map((v, i) => <li key={i}>{dateTime(v.createdAt)}: {v.reason}</li>)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export default function GuidelinesPage() {
   const router = useRouter();
   const { can, refresh } = useAuth();
@@ -62,6 +84,7 @@ export default function GuidelinesPage() {
   return (
     <>
       <PageHeader title="Community guidelines" description="You need to accept these before using the community feed." actions={can(P.GUIDELINES_MANAGE) && <Button variant="outline" onClick={() => { setDraft(data.content); setEdit(true); }}><Pencil className="h-4 w-4" /> Edit</Button>} />
+      <MyStanding />
       {can(P.GUIDELINES_MANAGE) ? (
         <Tabs tabs={[
           { value: 'g', label: 'Guidelines', content: guidelines },

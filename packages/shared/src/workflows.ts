@@ -18,6 +18,11 @@ export const WORKFLOWS = {
     { key: 'TEAM_LEAD', label: 'Team Lead', permission: PERMISSIONS.LEAVE_APPROVE_TL },
     { key: 'HR', label: 'HR', permission: PERMISSIONS.LEAVE_APPROVE_HR },
   ],
+  /** Work from home: same approvers as leave (Team Lead, then HR). */
+  WORK_FROM_HOME: [
+    { key: 'TEAM_LEAD', label: 'Team Lead', permission: PERMISSIONS.LEAVE_APPROVE_TL },
+    { key: 'HR', label: 'HR', permission: PERMISSIONS.LEAVE_APPROVE_HR },
+  ],
   ATTENDANCE_CORRECTION: [
     { key: 'TEAM_LEAD', label: 'Team Lead', permission: PERMISSIONS.ATTENDANCE_CORRECTION_APPROVE_TL },
     { key: 'HR', label: 'HR', permission: PERMISSIONS.ATTENDANCE_CORRECTION_APPROVE_HR },
@@ -46,6 +51,10 @@ export const WORKFLOWS = {
   ],
   MEDICAL_CLAIM: [
     { key: 'HR', label: 'HR', permission: PERMISSIONS.MEDICAL_MANAGE },
+  ],
+  /** LON-04: employee loan request from their own portal. */
+  LOAN_REQUEST: [
+    { key: 'HR', label: 'HR', permission: PERMISSIONS.LOANS_MANAGE },
   ],
 } as const satisfies Record<string, readonly WorkflowStep[]>;
 

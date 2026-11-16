@@ -1,9 +1,9 @@
 'use client';
 
-import { PERMISSIONS as P, holidaySchema, leaveRequestSchema } from '@hrms/shared';
-import { CalendarPlus, Plus, Trash2 } from 'lucide-react';
+import { PERMISSIONS as P, holidaySchema, leaveRequestSchema, leaveTypeSchema, wfhRequestSchema } from '@hrms/shared';
+import { CalendarPlus, House, Plus, Trash2 } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { DecisionButtons, DepartmentSelect, EmployeeSelect } from '@/components/domain';
 import { Button } from '@/components/ui/button';
 import { Badge, Card, CardBody, CardHeader, PageHeader, Progress, StatusBadge } from '@/components/ui/display';
@@ -14,9 +14,10 @@ import { useAuth } from '@/lib/auth';
 import { fieldError, useZodForm } from '@/lib/form';
 import { date, todayLocal } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
 
-interface Balance { leaveTypeId: string; code: string; name: string; color: string; allocated: number; used: number; pending: number; available: number; derivedFromOvertime: boolean }
-interface LeaveType { id: string; code: string; name: string; annualAllowance: number; isPaid: boolean; derivedFromOvertime: boolean; color: string; isActive: boolean }
+interface Balance { leaveTypeId: string; code: string; name: string; color: string; allocated: number; used: number; pending: number; available: number; carriedForward: number; derivedFromOvertime: boolean }
+interface LeaveType { id: string; code: string; name: string; annualAllowance: number; isPaid: boolean; derivedFromOvertime: boolean; carryForward: boolean; carryForwardMax: number | null; color: string; isActive: boolean }
 interface Req { id: string; employeeId: string; employeeName: string; typeName: string; typeColor: string; startDate: string; endDate: string; halfDay: boolean; days: number; reason: string; status: string; currentStep: string | null; cancellationStatus: string | null; cancellationReason: string | null; createdAt: string; canDecide: boolean; canDecideCancellation: boolean }
 interface Holiday { id: string; name: string; date: string; type: string; departmentName: string | null }
 
@@ -68,7 +69,7 @@ function Mine({ types }: { types: LeaveType[] }) {
             <div className="flex items-center justify-between"><p className="text-sm font-medium">{b.name}</p><span className="h-2.5 w-2.5 rounded-full" style={{ background: b.color }} aria-hidden /></div>
             <p className="mt-2 text-2xl font-semibold tabular-nums">{b.available}<span className="text-sm font-normal text-muted-foreground"> / {b.allocated} days</span></p>
             <Progress className="mt-2" value={b.allocated ? (b.available / b.allocated) * 100 : 0} />
-            <p className="mt-2 text-xs text-muted-foreground">{b.used} used · {b.pending} pending{b.derivedFromOvertime ? ' · earned from overtime' : ''}</p>
+            <p className="mt-2 text-xs text-muted-foreground">{b.used} used · {b.pending} pending{b.carriedForward ? ` · ${b.carriedForward} carried forward` : ''}{b.derivedFromOvertime ? ' · earned from overtime' : ''}</p>
           </Card>
         ))}
       </div>
@@ -85,6 +86,79 @@ function Mine({ types }: { types: LeaveType[] }) {
       <ApplyDialog open={open} onOpenChange={setOpen} types={types} />
       <CancelDialog req={cancel} onClose={() => setCancel(null)} />
     </div>
+  );
+}
+
+interface Wfh { id: string; employeeId: string; employeeName: string; startDate: string; endDate: string; days: number; reason: string; status: string; currentStep: string | null; cancellationReason: string | null; createdAt: string; canDecide: boolean; canCancel: boolean }
+
+const wfhDates = (r: { startDate: string; endDate: string }) =>
+  `${date(r.startDate, { day: 'numeric', month: 'short' })}${r.endDate !== r.startDate ? ` – ${date(r.endDate, { day: 'numeric', month: 'short' })}` : ''}`;
+
+function WfhApplyDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const form = useZodForm(wfhRequestSchema, { startDate: todayLocal(), endDate: todayLocal(), reason: '' });
+  const apply = useAction('post', '/leave/wfh', { invalidate: ['/leave', '/calendar', '/attendance'], success: 'Work-from-home request sent for approval', onSuccess: () => { onOpenChange(false); form.reset(); } });
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title="Apply to work from home" description="Same approval as leave: your Team Lead reviews it first, then HR gives final approval."
+      footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button loading={apply.isPending} onClick={form.handleSubmit((v) => apply.mutate(v))}>Submit request</Button></>}>
+      <div className="space-y-4">
+        <FormGrid>
+          <Field label="From" required error={fieldError(form, 'startDate')}>{(a) => <Input {...a} type="date" {...form.register('startDate')} />}</Field>
+          <Field label="To" required error={fieldError(form, 'endDate')}>{(a) => <Input {...a} type="date" {...form.register('endDate')} />}</Field>
+        </FormGrid>
+        <Field label="Reason" required error={fieldError(form, 'reason')}>{(a) => <Textarea {...a} rows={3} {...form.register('reason')} />}</Field>
+        <p className="text-xs text-muted-foreground">Approved days are marked as work from home in your attendance and don&apos;t count as absent. They don&apos;t use your leave balance.</p>
+      </div>
+    </Dialog>
+  );
+}
+
+function WfhCancelDialog({ req, onClose }: { req: Wfh | null; onClose: () => void }) {
+  const [reason, setReason] = useState('');
+  const cancel = useAction<{ reason: string }>('post', () => `/leave/wfh/${req!.id}/cancel`, { invalidate: ['/leave', '/calendar', '/attendance'], success: 'Work-from-home request cancelled', onSuccess: () => { onClose(); setReason(''); } });
+  return (
+    <Dialog open={!!req} onOpenChange={(o) => !o && onClose()} title="Cancel work from home" size="sm"
+      footer={<><Button variant="outline" onClick={onClose}>Keep it</Button><Button variant="danger" disabled={reason.trim().length < 5} loading={cancel.isPending} onClick={() => cancel.mutate({ reason })}>Cancel request</Button></>}>
+      <Field label="Reason" required>{(a) => <Textarea {...a} rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+    </Dialog>
+  );
+}
+
+function MyWfh() {
+  const { data, isLoading } = useApi<Wfh[]>('/leave/wfh?mine=true');
+  const [open, setOpen] = useState(false);
+  const [cancel, setCancel] = useState<Wfh | null>(null);
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-end"><Button onClick={() => setOpen(true)}><House className="h-4 w-4" /> Apply to work from home</Button></div>
+      <Card>
+        <CardHeader title="My work-from-home requests" description="Approved by your Team Lead, then HR." />
+        <DataTable loading={isLoading} rows={data} rowKey={(r) => r.id} empty="No work-from-home requests yet" columns={[
+          { key: 'd', header: 'Dates', cell: (r) => <span className="whitespace-nowrap">{wfhDates(r)}</span> },
+          { key: 'n', header: 'Working days', cell: (r) => r.days },
+          { key: 'r', header: 'Reason', hideOnMobile: true, cell: (r) => <span className="line-clamp-2 text-muted-foreground">{r.reason}</span> },
+          { key: 's', header: 'Status', cell: (r) => <StatusBadge status={r.status} step={r.currentStep} /> },
+          { key: 'a', header: '', cell: (r) => (r.canCancel ? <Button size="sm" variant="ghost" onClick={() => setCancel(r)}>Cancel</Button> : null) },
+        ]} />
+      </Card>
+      <WfhApplyDialog open={open} onOpenChange={setOpen} />
+      <WfhCancelDialog req={cancel} onClose={() => setCancel(null)} />
+    </div>
+  );
+}
+
+function WfhApprovals() {
+  const { data, isLoading } = useApi<Wfh[]>('/leave/wfh');
+  return (
+    <Card>
+      <CardHeader title="Work from home" description="Requests from your team or the company, Team Lead first, then HR." />
+      <DataTable loading={isLoading} rows={data} rowKey={(r) => r.id} empty="No work-from-home requests" columns={[
+        { key: 'e', header: 'Employee', cell: (r) => <span className="font-medium">{r.employeeName}</span> },
+        { key: 'd', header: 'Dates', cell: (r) => <span className="whitespace-nowrap">{wfhDates(r)} · {r.days}d</span> },
+        { key: 'r', header: 'Reason', hideOnMobile: true, cell: (r) => <span className="line-clamp-2 text-muted-foreground">{r.reason}</span> },
+        { key: 's', header: 'Status', cell: (r) => <StatusBadge status={r.status} step={r.currentStep} /> },
+        { key: 'a', header: '', cell: (r) => (r.canDecide ? <DecisionButtons path={`/leave/wfh/${r.id}/decision`} invalidate={['/leave', '/calendar', '/attendance']} /> : null) },
+      ]} />
+    </Card>
   );
 }
 
@@ -114,6 +188,7 @@ function Approvals() {
           { key: 'a', header: '', cell: (r) => (r.canDecide ? <DecisionButtons path={`/leave/requests/${r.id}/decision`} invalidate={['/leave', '/calendar']} /> : null) },
         ]} />
       </Card>
+      <WfhApprovals />
     </div>
   );
 }
@@ -153,18 +228,55 @@ function Holidays() {
   );
 }
 
+function LeaveTypeDialog({ type, open, onOpenChange }: { type?: LeaveType; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const form = useZodForm(leaveTypeSchema);
+  useEffect(() => {
+    if (open) form.reset(type ? { code: type.code, name: type.name, annualAllowance: type.annualAllowance, isPaid: type.isPaid, derivedFromOvertime: type.derivedFromOvertime, carryForward: type.carryForward, carryForwardMax: type.carryForwardMax, color: type.color, isActive: type.isActive } : { code: '', name: '', annualAllowance: 0, isPaid: true, derivedFromOvertime: false, carryForward: false, carryForwardMax: null, color: '#1e3a8a', isActive: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, type]);
+  const carry = form.watch('carryForward');
+  const done = { invalidate: ['/leave'], success: 'Leave type saved', onSuccess: () => onOpenChange(false) };
+  const create = useAction('post', '/leave/types', done);
+  const update = useAction('put', () => `/leave/types/${type!.id}`, done);
+  const num = { setValueAs: (v: string) => (v === '' ? null : Number(v)) };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title={type ? `Edit ${type.name}` : 'New leave type'}
+      footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button loading={create.isPending || update.isPending} onClick={form.handleSubmit((v) => (type ? update.mutate(v) : create.mutate(v)))}>Save</Button></>}>
+      <div className="space-y-4">
+        <FormGrid>
+          <Field label="Name" required error={fieldError(form, 'name')}>{(a) => <Input {...a} {...form.register('name')} />}</Field>
+          <Field label="Code" required error={fieldError(form, 'code')} hint="e.g. CASUAL">{(a) => <Input {...a} {...form.register('code')} />}</Field>
+          <Field label="Days per year" error={fieldError(form, 'annualAllowance')}>{(a) => <Input {...a} type="number" step={0.5} {...form.register('annualAllowance', { valueAsNumber: true })} />}</Field>
+          <Field label="Colour" error={fieldError(form, 'color')}>{(a) => <Input {...a} type="color" {...form.register('color')} />}</Field>
+        </FormGrid>
+        <div className="flex flex-col gap-2">
+          <Checkbox label="Paid leave" {...form.register('isPaid')} />
+          <Checkbox label="Earned from approved overtime (compensation leave)" {...form.register('derivedFromOvertime')} />
+          <Checkbox label="Carry unused days forward to next year" {...form.register('carryForward')} />
+        </div>
+        {carry && <Field label="Carry-forward limit (days)" hint="Leave empty for no limit" error={fieldError(form, 'carryForwardMax')}>{(a) => <Input {...a} type="number" step={0.5} min={0} {...form.register('carryForwardMax', num)} />}</Field>}
+        <Checkbox label="Active" {...form.register('isActive')} />
+      </div>
+    </Dialog>
+  );
+}
+
 function Policy({ types }: { types: LeaveType[] }) {
+  const [edit, setEdit] = useState<{ open: boolean; type?: LeaveType }>({ open: false });
   const [alloc, setAlloc] = useState({ employeeId: '', leaveTypeId: '', year: new Date().getFullYear(), days: 1, reason: '' });
   const save = useAction('post', '/leave/allocations', { invalidate: ['/leave'], success: 'Balance adjusted', onSuccess: () => setAlloc((a) => ({ ...a, days: 1, reason: '' })) });
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <Card>
-        <CardHeader title="Leave types" description="Annual entitlement per employee." />
-        <DataTable rows={types} rowKey={(t) => t.id} columns={[
+        <CardHeader title="Leave types" description="Annual entitlement per employee. Click a type to edit it." action={<Button size="sm" onClick={() => setEdit({ open: true })}><Plus className="h-3.5 w-3.5" /> Add type</Button>} />
+        <DataTable rows={types} rowKey={(t) => t.id} onRowClick={(t) => setEdit({ open: true, type: t })} columns={[
           { key: 'n', header: 'Type', cell: (t) => <span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: t.color }} aria-hidden />{t.name}</span> },
           { key: 'a', header: 'Allowance', cell: (t) => (t.derivedFromOvertime ? 'From approved overtime' : `${t.annualAllowance} days / year`) },
+          { key: 'c', header: 'Carry forward', hideOnMobile: true, cell: (t) => (t.carryForward ? (t.carryForwardMax === null ? 'Yes, no limit' : `Up to ${t.carryForwardMax} days`) : 'No') },
           { key: 'p', header: 'Paid', cell: (t) => (t.isPaid ? 'Yes' : 'No') },
+          { key: 'del', header: <span className="sr-only">Delete</span>, cell: (t) => <DeleteButton iconOnly path={`/leave/types/${t.id}`} what={`the ${t.name} leave type`} invalidate={['/leave']} detail="Only possible if it was never used. Otherwise untick Active to retire it." /> },
         ]} />
+        <LeaveTypeDialog type={edit.type} open={edit.open} onOpenChange={(o) => setEdit({ open: o, type: edit.type })} />
       </Card>
       <Card>
         <CardHeader title="Adjust an employee's balance" description="Add (or subtract with a negative number) days for one year." />
@@ -192,6 +304,7 @@ function LeaveInner() {
       <PageHeader title="Leave & holidays" description="Casual 14 days, sick 7 days, plus compensation leave from approved overtime." />
       <Tabs defaultValue={params.get('tab') ?? (me?.employee ? 'mine' : 'approvals')} tabs={[
         { value: 'mine', label: 'My leave', hidden: !me?.employee, content: <Mine types={types ?? []} /> },
+        { value: 'wfh', label: 'Work from home', hidden: !me?.employee, content: <MyWfh /> },
         { value: 'approvals', label: 'Approvals', hidden: !can(P.LEAVE_APPROVE_TL, P.LEAVE_APPROVE_HR), content: <Approvals /> },
         { value: 'holidays', label: 'Holidays', content: <Holidays /> },
         { value: 'policy', label: 'Leave policy', hidden: !can(P.LEAVE_MANAGE), content: <Policy types={types ?? []} /> },

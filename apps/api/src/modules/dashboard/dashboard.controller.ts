@@ -1,14 +1,16 @@
+import { salesAccess, salesSummary } from '../performance/sales.controller';
 import { Controller, Get } from '@nestjs/common';
 import { PERMISSIONS as P, WORKFLOWS, type WorkflowType } from '@hrms/shared';
-import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { currentUser } from '../../common/context';
-import { addDays, todayIn } from '../../common/tz';
+import { addDays, dayOfWeek, todayIn, zonedInstant } from '../../common/tz';
 import { tenantInfo } from '../../common/util';
 import { ApprovalsService } from '../../core/approvals.service';
 import { ScopeService } from '../../core/scope.service';
 import { DbService } from '../../db/db.service';
 import {
   attendanceDays,
+  attendancePunches,
   auditLogs,
   calendarEvents,
   complaints,
@@ -26,12 +28,15 @@ import {
   surveys,
   teamMembers,
   users,
+  wfhRequests,
 } from '../../db/schema';
 import { AttendanceService } from '../attendance/attendance.service';
 import { LeaveService } from '../leave/leave.service';
+import { scheduledNetMinutes } from '../attendance/attendance.logic';
 
 const TABLES: Record<Exclude<WorkflowType, 'PAYROLL'>, { table: string; label: string; link: string }> = {
   LEAVE: { table: 'leave_requests', label: 'Leave request', link: '/leave/approvals' },
+  WORK_FROM_HOME: { table: 'wfh_requests', label: 'Work from home', link: '/leave?tab=approvals' },
   ATTENDANCE_CORRECTION: { table: 'attendance_corrections', label: 'Attendance correction', link: '/attendance/corrections' },
   OVERTIME: { table: 'overtime_records', label: 'Overtime', link: '/attendance/overtime' },
   COMPENSATION: { table: 'compensation_requests', label: 'Overtime compensation', link: '/attendance/overtime' },
@@ -39,6 +44,7 @@ const TABLES: Record<Exclude<WorkflowType, 'PAYROLL'>, { table: string; label: s
   RESIGNATION: { table: 'resignations', label: 'Resignation', link: '/resignations' },
   TEAM_TRANSFER: { table: 'team_transfer_requests', label: 'Team transfer', link: '/teams' },
   MEDICAL_CLAIM: { table: 'medical_claims', label: 'Medical claim', link: '/medical' },
+  LOAN_REQUEST: { table: 'loans', label: 'Loan request', link: '/loans' },
 };
 
 @Controller()
@@ -140,7 +146,30 @@ export class DashboardController {
         .limit(5);
       const [docs] = await tx.select({ n: sql<number>`count(*)::int` }).from(employeeDocuments).where(and(eq(employeeDocuments.employeeId, id), eq(employeeDocuments.source, 'HR')));
       const [openQueries] = await tx.select({ n: sql<number>`count(*)::int` }).from(queries).where(and(eq(queries.employeeId, id), inArray(queries.status, ['PENDING', 'IN_PROGRESS'])));
+      // Today's sign-in: how it happened (biometric device, import, manual, correction or work from home) and the shift,
+      // so the dashboard can show time passed and time remaining.
+      const [firstPunch] = await tx
+        .select({ source: attendancePunches.source, at: attendancePunches.punchedAt, note: attendancePunches.note })
+        .from(attendancePunches)
+        .where(and(eq(attendancePunches.employeeId, id), gte(attendancePunches.punchedAt, zonedInstant(today, '00:00', t.timezone)), lte(attendancePunches.punchedAt, zonedInstant(addDays(today, 1), '00:00', t.timezone))))
+        .orderBy(asc(attendancePunches.punchedAt))
+        .limit(1);
+      const [wfhToday] = await tx
+        .select({ id: wfhRequests.id })
+        .from(wfhRequests)
+        .where(and(eq(wfhRequests.employeeId, id), eq(wfhRequests.status, 'APPROVED'), lte(wfhRequests.startDate, today), gte(wfhRequests.endDate, today)))
+        .limit(1);
+      const schedule = await this.attendance.scheduleFor(id);
+      const workingDay = schedule.workingDays.includes(dayOfWeek(today));
       out.employee = {
+        signIn: {
+          source: wfhToday || todayRec?.workFromHome || firstPunch?.note === 'Signed in from home' ? 'HOME' : (firstPunch?.source ?? null),
+          workFromHome: !!wfhToday || !!todayRec?.workFromHome,
+          checkIn: todayRec?.checkIn ?? firstPunch?.at ?? null,
+          checkOut: todayRec?.checkOut ?? null,
+          workingDay,
+          shift: { startTime: schedule.startTime.slice(0, 5), endTime: schedule.endTime.slice(0, 5), breakMinutes: schedule.breakMinutes, netMinutes: workingDay ? scheduledNetMinutes(schedule) : 0 },
+        },
         attendance: att,
         today: todayRec ?? null,
         overtime: await this.attendance.overtimeBalance(id),
@@ -231,7 +260,23 @@ export class DashboardController {
         .leftJoin(teamMembers, eq(teamMembers.employeeId, employees.id))
         .where(and(eq(employees.employmentStatus, 'ACTIVE'), isNull(teamMembers.teamId)));
       const s = (k: string) => byStatus.find((b) => b.status === k)?.n ?? 0;
+      // 6-month trends for the charts: headcount at month end, joiners and leavers; payroll cost per run.
+      const workforceTrend = (
+        await tx.execute(sql`
+          select to_char(m, 'YYYY-MM') as month,
+            (select count(*) from employees e where e.joining_date <= (m + interval '1 month' - interval '1 day')::date
+               and (e.exit_date is null or e.exit_date > (m + interval '1 month' - interval '1 day')::date))::int as headcount,
+            (select count(*) from employees e where date_trunc('month', e.joining_date) = m)::int as joined,
+            (select count(*) from employees e where e.exit_date is not null and date_trunc('month', e.exit_date) = m)::int as "left"
+          from generate_series(date_trunc('month', ${today}::date) - interval '5 months', date_trunc('month', ${today}::date), interval '1 month') m
+          order by m`)
+      ).rows as { month: string; headcount: number; joined: number; left: number }[];
+      const payrollTrend = u.permissions.has(P.PAYROLL_READ_ALL)
+        ? (await tx.select({ period: payrollRuns.period, totalNet: payrollRuns.totalNet, status: payrollRuns.status }).from(payrollRuns).orderBy(desc(payrollRuns.period)).limit(6)).reverse()
+        : [];
       out.organisation = {
+        workforceTrend,
+        payrollTrend,
         headcount: { total: byStatus.reduce((a, b) => a + b.n, 0), active: s('ACTIVE'), inactive: s('INACTIVE'), resigned: s('RESIGNED'), terminated: s('TERMINATED') },
         todayAttendance: Object.fromEntries(todayAll.map((x) => [x.status, x.n])),
         byDepartment: byDept,
@@ -256,8 +301,15 @@ export class DashboardController {
         })
         .from(users);
       const [deptCount] = await tx.select({ n: sql<number>`count(*)::int` }).from(departments).where(eq(departments.isActive, true));
-      const recentAudit = await tx.select().from(auditLogs).orderBy(desc(auditLogs.id)).limit(8);
+      const recentAudit = (await tx.select({ a: auditLogs, email: users.email }).from(auditLogs).leftJoin(users, eq(users.id, auditLogs.actorUserId)).orderBy(desc(auditLogs.id)).limit(8))
+        .map((r) => ({ ...r.a, actorLabel: r.a.actorLabel ?? r.email ?? null }));
       out.system = { users: userStats, departments: deptCount?.n ?? 0, recentAudit };
+    }
+
+    // ---- Sales revenue: Sales department and people given "View sales revenue" only (checked live).
+    if ((await salesAccess(tx, u)).allowed) {
+      const { totals, trend } = await salesSummary(tx, month);
+      out.sales = { totals, trend };
     }
 
     out.pendingApprovals = (await this.inbox()).length;

@@ -13,16 +13,31 @@ import { useAuth } from '@/lib/auth';
 import { fieldError, useZodForm } from '@/lib/form';
 import { money, monthLabel, todayLocal } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
+import { AttachmentLinks } from '@/components/file-preview';
+import { FileUpload } from '@/components/ui/file-upload';
 
 interface TargetRow { id: string; employeeId: string; fullName: string; period: string; metric: string; unit: string; targetValue: number; incentiveType: string; incentiveValue: number; achieved: number | null; progress: number | null }
-interface Sub { id: string; employeeId: string; fullName: string; period: string; metric: string; achievedValue: number; targetValue: number | null; unit: string | null; notes: string | null; tlRemarks: string | null; hrRemarks: string | null; status: string; currentStep: string | null; canDecide: boolean }
+interface Sub { id: string; employeeId: string; fullName: string; period: string; metric: string; achievedValue: number; targetValue: number | null; unit: string | null; notes: string | null; tlRemarks: string | null; hrRemarks: string | null; status: string; currentStep: string | null; canDecide: boolean; fileIds?: string[] }
 interface Incentive { id: string; fullName: string; period: string; amount: number; status: string }
 
 const fmt = (n: number, unit?: string | null) => (unit && unit.length === 3 && unit === unit.toUpperCase() ? money(n, unit) : `${n.toLocaleString()} ${unit ?? ''}`);
 
 function SubmitDialog({ open, onOpenChange, targets }: { open: boolean; onOpenChange: (o: boolean) => void; targets: TargetRow[] }) {
   const form = useZodForm(kpiSubmissionSchema, { period: todayLocal().slice(0, 7), metric: '' } as never);
-  const submit = useAction('post', '/kpi/submissions', { invalidate: ['/kpi'], success: 'Results submitted to your Team Lead', onSuccess: () => { onOpenChange(false); form.reset(); } });
+  const [files, setFiles] = useState<File[]>([]);
+  // Sent as a form so proof of the work done can go with the results.
+  const submit = useAction<Record<string, unknown>>('post', '/kpi/submissions', {
+    invalidate: ['/kpi'],
+    success: 'Results submitted to your Team Lead',
+    onSuccess: () => { onOpenChange(false); form.reset(); setFiles([]); },
+    body: (v) => {
+      const fd = new FormData();
+      for (const [k, x] of Object.entries(v)) if (x !== undefined && x !== null && x !== '') fd.set(k, String(x));
+      for (const f of files) fd.append('files', f);
+      return fd;
+    },
+  });
   const pick = (id: string) => {
     const t = targets.find((x) => x.id === id);
     form.setValue('targetId', (id || undefined) as never);
@@ -38,7 +53,10 @@ function SubmitDialog({ open, onOpenChange, targets }: { open: boolean; onOpenCh
           <Field label="Period" required error={fieldError(form, 'period')}>{(a) => <Input {...a} type="month" {...form.register('period')} />}</Field>
         </FormGrid>
         <Field label="Achieved" required error={fieldError(form, 'achievedValue')}>{(a) => <Input {...a} type="number" {...form.register('achievedValue', { valueAsNumber: true })} />}</Field>
-        <Field label="Notes">{(a) => <Textarea {...a} rows={3} {...form.register('notes')} />}</Field>
+        <Field label="Notes" hint="What you did to reach this result">{(a) => <Textarea {...a} rows={3} {...form.register('notes')} />}</Field>
+        <Field label="Proof of work (optional)" hint="Reports, screenshots or documents that show the work done. Up to 5 files.">
+          {(a) => <FileUpload {...a} value={files} onChange={setFiles} multiple maxFiles={5} accept=".pdf,image/*" label="Attach files" />}
+        </Field>
       </div>
     </Dialog>
   );
@@ -53,7 +71,7 @@ function TargetDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o:
     <Dialog open={open} onOpenChange={onOpenChange} title="Set a target" description="Exceeding the target makes the employee eligible for an incentive." size="lg"
       footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button loading={save.isPending} onClick={form.handleSubmit((v) => save.mutate(v))}>Save target</Button></>}>
       <div className="space-y-4">
-        <Field label="Employee" required error={fieldError(form, 'employeeId')} hint={!can(P.KPI_TARGETS_MANAGE) && isTeamLead ? 'Your team members only' : undefined}>{(a) => <EmployeeSelect {...a} {...form.register('employeeId')} />}</Field>
+        <Field label="Employee" required error={fieldError(form, 'employeeId')} hint={!can(P.KPI_TARGETS_MANAGE) && isTeamLead ? 'Your team members only' : undefined}>{(a) => <EmployeeSelect {...a} value={(form.watch('employeeId') as string | undefined) ?? ''} onChange={(e) => form.setValue('employeeId', (e.target.value || undefined) as never, { shouldDirty: true, shouldValidate: true })} />}</Field>
         <FormGrid cols={3}>
           <Field label="Metric" required error={fieldError(form, 'metric')}>{(a) => <Input {...a} {...form.register('metric')} />}</Field>
           <Field label="Unit" error={fieldError(form, 'unit')}>{(a) => <Input {...a} {...form.register('unit')} />}</Field>
@@ -75,7 +93,8 @@ function SubsTable({ rows, loading, showName }: { rows?: Sub[]; loading: boolean
       ...(showName ? [{ key: 'n', header: 'Employee', cell: (s: Sub) => <span className="font-medium">{s.fullName}</span> }] : []),
       { key: 'm', header: 'Metric', cell: (s) => <div><p>{s.metric}</p><p className="text-xs text-muted-foreground">{monthLabel(s.period)}</p></div> },
       { key: 'a', header: 'Achieved', cell: (s) => <div className="tabular-nums">{fmt(s.achievedValue, s.unit)}{s.targetValue !== null && <p className="text-xs text-muted-foreground">target {fmt(s.targetValue, s.unit)}</p>}</div> },
-      { key: 'r', header: 'Remarks', hideOnMobile: true, cell: (s) => <div className="max-w-xs text-xs text-muted-foreground">{s.tlRemarks && <p>TL: {s.tlRemarks}</p>}{s.hrRemarks && <p>HR: {s.hrRemarks}</p>}</div> },
+      { key: 'p', header: 'Proof', cell: (s) => (s.fileIds?.length ? <AttachmentLinks base={`/kpi/submissions/${s.id}/files`} count={s.fileIds.length} /> : <span className="text-xs text-muted-foreground">—</span>) },
+      { key: 'r', header: 'Remarks', hideOnMobile: true, cell: (s) => <div className="max-w-xs text-xs text-muted-foreground">{s.notes && <p className="text-foreground">{s.notes}</p>}{s.tlRemarks && <p>TL: {s.tlRemarks}</p>}{s.hrRemarks && <p>HR: {s.hrRemarks}</p>}</div> },
       { key: 's', header: 'Status', cell: (s) => <StatusBadge status={s.status} step={s.currentStep} /> },
       { key: 'x', header: '', cell: (s) => (s.canDecide ? <DecisionButtons path={`/kpi/submissions/${s.id}/decision`} invalidate={['/kpi']} commentLabel="Remarks & feedback" /> : null) },
     ]} />
@@ -147,6 +166,7 @@ export default function KpiPage() {
                   { key: 'n', header: 'Employee', cell: (t) => <span className="font-medium">{t.fullName}</span> },
                   { key: 'm', header: 'Metric', cell: (t) => `${t.metric} · ${monthLabel(t.period)}` },
                   { key: 'p', header: 'Progress', cell: (t) => <div className="w-40"><Progress value={t.progress ?? 0} /><p className="mt-1 text-xs text-muted-foreground">{t.achieved !== null ? `${t.progress}%` : 'Not submitted'}</p></div> },
+                  { key: 'x', header: <span className="sr-only">Delete</span>, cell: (t) => (t.achieved === null ? <DeleteButton iconOnly path={`/kpi/targets/${t.id}`} what={`the "${t.metric}" target`} invalidate={['/kpi']} /> : null) },
                 ]} />
               </Card>
               {!!allInc?.length && (

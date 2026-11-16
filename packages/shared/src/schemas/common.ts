@@ -1,4 +1,27 @@
 import { z } from 'zod';
+import { phoneProblem, toInternationalPhone } from '../phone';
+
+/**
+ * Plain-language defaults for validation messages (shown in forms and API errors), instead of
+ * library wording like "Too small: expected string to have >=2 characters". Schemas with their own
+ * message keep it.
+ */
+z.config({
+  customError: (iss) => {
+    const n = Number(iss.minimum ?? iss.maximum);
+    if (iss.code === 'too_small' && iss.origin === 'string') return n <= 1 ? 'This field is required' : `Enter at least ${n} characters`;
+    if (iss.code === 'too_big' && iss.origin === 'string') return `Keep it to ${n} characters or fewer`;
+    if (iss.code === 'too_small' && iss.origin === 'number') return `Must be at least ${n}`;
+    if (iss.code === 'too_big' && iss.origin === 'number') return `Must be ${n} or less`;
+    if (iss.code === 'too_small' && iss.origin === 'array') return n <= 1 ? 'Choose at least one' : `Choose at least ${n}`;
+    if (iss.code === 'invalid_type' && iss.input === undefined) return 'This field is required';
+    if (iss.code === 'invalid_type' && iss.expected === 'number') return 'Enter a number';
+    if (iss.code === 'invalid_format' && iss.format === 'email') return 'Enter a valid email address';
+    if (iss.code === 'invalid_format' && iss.format === 'date') return 'Enter a valid date';
+    if (iss.code === 'invalid_value') return 'Choose one of the options';
+    return undefined;
+  },
+});
 
 export const uuid = z.uuid();
 export const isoDate = z.iso.date(); // YYYY-MM-DD
@@ -20,10 +43,16 @@ export const cnic = z
     return `${d.slice(0, 5)}-${d.slice(5, 12)}-${d.slice(12)}`;
   });
 
+
+/** Phone number validated for its country and stored in international form, e.g. "+92 3001234567". */
 export const phone = z
   .string()
   .trim()
-  .regex(/^\+?[0-9 ()-]{7,20}$/, 'Enter a valid phone number');
+  .superRefine((v, ctx) => {
+    const problem = v ? phoneProblem(v) : 'Enter a phone number';
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  })
+  .transform((v) => toInternationalPhone(v));
 
 export const password = z
   .string()
@@ -50,3 +79,34 @@ export interface Paginated<T> {
   page: number;
   pageSize: number;
 }
+
+/** A real IANA time zone, e.g. "Asia/Karachi" (checked with the runtime's time zone database). */
+export const timeZone = z
+  .string()
+  .min(1)
+  .max(60)
+  .refine((tz) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Choose a time zone from the list');
+
+/** Email domain such as "prepecom.com" (lower case, no @). */
+export const emailDomain = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^(?=.{3,100}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/, 'Enter a domain like company.com');
+
+/** Every domain a company's login emails may use: the main one first, then the extra ones. */
+export const companyEmailDomains = (t: { emailDomain?: string | null; extraEmailDomains?: string[] | null }): string[] =>
+  [...new Set([t.emailDomain, ...(t.extraEmailDomains ?? [])].filter((d): d is string => !!d))];
+
+/** Suggested company email domain from its name: "Prep Ecom Align" → "prepecomalign.com". */
+export const suggestEmailDomain = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60) || 'company'}.com`;
+
+/** ISO 4217 currency code, e.g. "PKR". */
+export const currencyCode = z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Choose a currency from the list');

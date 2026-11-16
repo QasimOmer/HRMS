@@ -1,0 +1,9 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.1-hrms.1",
+  "description": "deepmerge 4.3.1 with a fix for GHSA-gcqx-w48m-w2h4 (no upstream patch exists). See README.md.",
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "private": true
+}

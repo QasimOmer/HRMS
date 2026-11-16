@@ -3,7 +3,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { Public } from './common/decorators';
 import { AllExceptionsFilter } from './common/errors';
-import { AuthGuard, CsrfGuard } from './common/guards';
+import { AuthGuard, CsrfGuard, ModuleGuard } from './common/guards';
 import { AuditInterceptor, TenantTxInterceptor } from './common/interceptors';
 import { CoreModule } from './core/core.module';
 import { DbService } from './db/db.service';
@@ -34,6 +34,7 @@ class HealthController {
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: CsrfGuard },
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: ModuleGuard },
     // Interceptor order: tenant transaction (outer) → audit (inner, same transaction).
     { provide: APP_INTERCEPTOR, useClass: TenantTxInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },

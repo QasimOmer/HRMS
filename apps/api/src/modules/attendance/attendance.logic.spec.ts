@@ -5,7 +5,7 @@ const TZ = 'Asia/Karachi';
 const base = (over: Partial<DayInput> = {}): DayInput => ({
   date: '2026-11-10', // Tuesday
   tz: TZ,
-  schedule: { startTime: '09:00', endTime: '18:00', breakMinutes: 60, graceMinutes: 15, workingDays: [1, 2, 3, 4, 5] },
+  schedule: { startTime: '09:00', endTime: '18:00', breakMinutes: 60, workingDays: [1, 2, 3, 4, 5] },
   punches: [],
   isHoliday: false,
   leave: 'NONE',
@@ -34,14 +34,34 @@ describe('computeDay', () => {
     expect(r.status).toBe('PRESENT');
   });
 
-  it('flags late arrival beyond grace as LATE (yellow)', () => {
+  it('flags late arrival as LATE (yellow) and stores the late minutes', () => {
     const r = computeDay(base({ punches: [p('09:40'), p('18:40')] }));
     expect(r.lateMinutes).toBe(40);
     expect(r.status).toBe('LATE');
   });
 
-  it('tolerates arrival within grace', () => {
-    const r = computeDay(base({ punches: [p('09:10'), p('18:10')] }));
+  it('has no grace period (ATT-03): shift 13:30, check-in 13:52 = 22 minutes late', () => {
+    const r = computeDay(base({ schedule: { startTime: '13:30', endTime: '22:30', breakMinutes: 60, workingDays: [1, 2, 3, 4, 5] }, punches: [p('13:52'), p('22:52')] }));
+    expect(r.lateMinutes).toBe(22);
+    expect(r.status).toBe('LATE');
+  });
+
+  it('OVT-07: 2h of approved overtime reduces the required hours by 2h', () => {
+    const r = computeDay(base({ reducedMinutes: 120, punches: [p('09:00'), p('13:00'), p('14:00'), p('16:00')] }));
+    expect(r.scheduledMinutes).toBe(360);
+    expect(r.workedMinutes).toBe(360);
+    expect(r.earlyLeave).toBe(false);
+    expect(r.status).toBe('PRESENT');
+  });
+
+  it('OVT-07: a shortened day may also start later without counting as late', () => {
+    const r = computeDay(base({ reducedMinutes: 120, punches: [p('11:00'), p('12:30'), p('13:30'), p('18:00')] }));
+    expect(r.lateMinutes).toBe(0);
+    expect(r.status).toBe('PRESENT');
+  });
+
+  it('is on time when checking in exactly at shift start', () => {
+    const r = computeDay(base({ punches: [p('09:00'), p('18:00')] }));
     expect(r.lateMinutes).toBe(0);
     expect(r.status).toBe('PRESENT');
   });
@@ -72,6 +92,35 @@ describe('computeDay', () => {
 
   it('marks approved leave days as ON_LEAVE (navy)', () => {
     expect(computeDay(base({ leave: 'FULL' })).status).toBe('ON_LEAVE');
+  });
+
+  it('app punches: a break is not a check-out; IN → break → OUT computes the break and hours', () => {
+    const web = (t: string, type: 'IN' | 'OUT' | 'BREAK_START' | 'BREAK_END') => ({ at: at(t), type, source: 'WEB' as const });
+    const onBreak = computeDay(base({ isFuture: true, punches: [web('09:00', 'IN'), web('13:00', 'BREAK_START')] }));
+    expect(onBreak.checkOut).toBeNull();
+    expect(onBreak.status).toBe('PRESENT');
+    const back = computeDay(base({ isFuture: true, punches: [web('09:00', 'IN'), web('13:00', 'BREAK_START'), web('13:45', 'BREAK_END')] }));
+    expect(back.checkOut).toBeNull();
+    const done = computeDay(base({ punches: [web('09:00', 'IN'), web('13:00', 'BREAK_START'), web('13:45', 'BREAK_END'), web('18:15', 'OUT')] }));
+    expect(done.checkOut?.toISOString()).toBe(at('18:15').toISOString());
+    expect(done.breakMinutes).toBe(45);
+    expect(done.workedMinutes).toBe(510);
+  });
+
+  it('counts an approved work-from-home day without punches as present for the scheduled hours', () => {
+    const r = computeDay(base({ workFromHome: true }));
+    expect(r.status).toBe('PRESENT');
+    expect(r.workedMinutes).toBe(480);
+    expect(r.lateMinutes).toBe(0);
+  });
+
+  it('work from home does not change weekends, holidays, leave, future days or real punches', () => {
+    expect(computeDay(base({ workFromHome: true, date: '2026-11-08' })).status).toBe('WEEKEND');
+    expect(computeDay(base({ workFromHome: true, isHoliday: true })).status).toBe('HOLIDAY');
+    expect(computeDay(base({ workFromHome: true, leave: 'FULL' })).status).toBe('ON_LEAVE');
+    expect(computeDay(base({ workFromHome: true, isFuture: true })).status).toBe('PENDING');
+    expect(computeDay(base({ workFromHome: true, punches: [p('09:40'), p('18:40')] })).lateMinutes).toBe(40);
+    expect(computeDay(base({ workFromHome: false })).status).toBe('ABSENT');
   });
 
   it('marks weekends and holidays', () => {

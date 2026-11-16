@@ -30,6 +30,27 @@ export const loanSchema = z.object({
   reason: optionalText(500),
 });
 
+/** LON-04: employee-initiated loan request (documents optional). */
+export const loanRequestSchema = z.object({
+  principal: money.refine((v) => v > 0, 'Must be positive'),
+  installment: money.refine((v) => v > 0, 'Must be positive'),
+  startPeriod: period,
+  reason: trimmed(5, 1000),
+});
+
+/** HR may adjust the instalment or start month when approving. */
+export const loanDecisionSchema = z.object({
+  approve: z.boolean(),
+  installment: money.optional(),
+  startPeriod: period.optional(),
+  comment: optionalText(1000),
+});
+
+/** PAY-08: approved payroll is locked; HR must give a reason to reopen it. */
+export const payrollReopenSchema = z.object({
+  reason: trimmed(5, 1000),
+});
+
 export const loanRepaymentSchema = z.object({
   amount: money.refine((v) => v > 0, 'Must be positive'),
   paidOn: isoDate,

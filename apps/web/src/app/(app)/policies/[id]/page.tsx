@@ -11,6 +11,7 @@ import { useAuth } from '@/lib/auth';
 import { date } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
 import type { Policy } from '../page';
+import { DeleteButton } from '@/components/delete-button';
 
 /**
  * F1 – read-only viewer. Right-click, copy, drag and printing are blocked and the
@@ -58,6 +59,7 @@ export default function PolicyPage({ params }: { params: Promise<{ id: string }>
           <StatusBadge status={p.status} />
           {p.status !== 'PUBLISHED' && <Button loading={publish.isPending} onClick={() => publish.mutate(undefined)}><Send className="h-4 w-4" /> Publish</Button>}
           {p.status === 'PUBLISHED' && <Button variant="outline" loading={archive.isPending} onClick={() => archive.mutate(undefined)}><Archive className="h-4 w-4" /> Archive</Button>}
+          <DeleteButton path={`/policies/${id}`} what="this policy" invalidate={['/policies']} onDeleted={() => window.location.assign('/policies')} detail="The policy and its document are removed for everyone. This cannot be undone." />
         </>}
       />
       <p className="no-print mb-4 flex items-center gap-2 text-xs text-muted-foreground"><ShieldAlert className="h-3.5 w-3.5" aria-hidden /> Confidential company document. Copying, printing and downloading are disabled.</p>

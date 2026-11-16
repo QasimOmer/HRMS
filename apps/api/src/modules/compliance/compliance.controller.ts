@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Put, Query, UploadedFile, UploadedFiles, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Put, Query, UploadedFile, UploadedFiles, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
@@ -16,19 +16,28 @@ import { z } from 'zod';
 import { config } from '../../config';
 import { als, currentUser } from '../../common/context';
 import { randomToken, sha256 } from '../../common/crypto';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden, notFound } from '../../common/errors';
 import { todayIn } from '../../common/tz';
-import { one, tenantInfo } from '../../common/util';
+import { one, tenantInfo, requireDelete, assertUnused, countWhere } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { NotificationsService } from '../../core/notifications.service';
 import { ScopeService } from '../../core/scope.service';
 import { StorageService, type UploadedFileLike } from '../../core/storage.service';
 import { DbService } from '../../db/db.service';
-import { complaints, departments, employees, policies, queries, queryMessages, users } from '../../db/schema';
+import {
+  complaints,
+  departments,
+  employees,
+  policies,
+  queries,
+  queryMessages,
+  users,
+} from '../../db/schema';
 
 const uploadLimits = { limits: { fileSize: config().MAX_UPLOAD_MB * 1024 * 1024 } };
 
+@RequireModule('COMPLIANCE')
 @Controller()
 export class ComplianceController {
   constructor(
@@ -37,6 +46,42 @@ export class ComplianceController {
     private readonly notify: NotificationsService,
     private readonly scope: ScopeService,
   ) {}
+
+  /**
+   * Compliance overview: everyone gets their own numbers (published policies, their queries); people who
+   * manage policies, complaints or all queries also get those counts. Nothing beyond the person's access.
+   */
+  @Get('compliance/overview')
+  async overview() {
+    const u = currentUser();
+    const tx = this.db.tx;
+    const n = async (table: typeof policies | typeof complaints | typeof queries, where: SQL | undefined) =>
+      ((await tx.select({ n: sql<number>`count(*)::int` }).from(table).where(where)) as [{ n: number }])[0].n;
+    const open = sql`${queries.status} in ('PENDING', 'IN_PROGRESS')`;
+    const out: Record<string, unknown> = {
+      publishedPolicies: await n(policies, eq(policies.status, 'PUBLISHED')),
+      recentPolicies: await tx
+        .select({ id: policies.id, title: policies.title, category: policies.category, updatedAt: policies.updatedAt })
+        .from(policies)
+        .where(eq(policies.status, 'PUBLISHED'))
+        .orderBy(desc(policies.updatedAt))
+        .limit(5),
+    };
+    if (u.employeeId) {
+      out.myOpenQueries = await n(queries, and(eq(queries.employeeId, u.employeeId), open));
+      out.assignedOpenQueries = await n(queries, and(eq(queries.assignedToEmployeeId, u.employeeId), open));
+      out.myQueries = await tx
+        .select({ id: queries.id, subject: queries.subject, status: queries.status, updatedAt: queries.updatedAt })
+        .from(queries)
+        .where(eq(queries.employeeId, u.employeeId))
+        .orderBy(desc(queries.updatedAt))
+        .limit(5);
+    }
+    if (u.permissions.has(P.POLICIES_MANAGE)) out.draftPolicies = await n(policies, eq(policies.status, 'DRAFT'));
+    if (u.permissions.has(P.COMPLAINTS_MANAGE)) out.openComplaints = await n(complaints, sql`${complaints.status} in ('SUBMITTED', 'UNDER_REVIEW')`);
+    if (u.permissions.has(P.QUERIES_READ_ALL)) out.openQueriesAll = await n(queries, open);
+    return out;
+  }
 
   /* ---------------- F1 Policies & documents ---------------- */
 
@@ -104,6 +149,15 @@ export class ComplianceController {
   @Audit('policy.archived', 'policy')
   async archive(@Param('id', ParseUUIDPipe) id: string) {
     return one(await this.db.tx.update(policies).set({ status: 'ARCHIVED' }).where(eq(policies.id, id)).returning(), 'Policy');
+  }
+
+  @Delete('policies/:id')
+  @RequireAny(P.POLICIES_MANAGE)
+  @Audit('policy.deleted', 'policy')
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    one(await this.db.tx.delete(policies).where(eq(policies.id, id)).returning({ id: policies.id }), 'Policy');
+    return { id, deleted: true };
   }
 
   /* ---------------- F3 Anonymous complaints ---------------- */

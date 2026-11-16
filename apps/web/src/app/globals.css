@@ -30,10 +30,12 @@
   --danger-soft: #fef2f2;
   --info: #1e3a8a;
   --info-soft: #eef2ff;
-  --sidebar: #0b1220;
-  --sidebar-foreground: #cbd5e1;
-  --sidebar-active: #1e293b;
-  --sidebar-heading: #64748b;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #334155;
+  --sidebar-active: #eff6ff;
+  --sidebar-active-foreground: #1d4ed8;
+  --sidebar-heading: #94a3b8;
+  --sidebar-border: #e2e8f0;
 }
 
 .dark {
@@ -59,10 +61,12 @@
   --danger-soft: #450a0a;
   --info: #93c5fd;
   --info-soft: #172554;
-  --sidebar: #070b14;
+  --sidebar: #0b1220;
   --sidebar-foreground: #cbd5e1;
   --sidebar-active: #1e293b;
+  --sidebar-active-foreground: #ffffff;
   --sidebar-heading: #64748b;
+  --sidebar-border: #1f2937;
 }
 
 @theme inline {
@@ -93,6 +97,8 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-active: var(--sidebar-active);
   --color-sidebar-heading: var(--sidebar-heading);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+  --color-sidebar-border: var(--sidebar-border);
   --radius-lg: 0.75rem;
   --radius-md: 0.5rem;
 }
@@ -133,5 +139,132 @@
 @media print {
   .no-print {
     display: none !important;
+  }
+}
+
+/* Horizontal tab bars scroll by swipe without a visible scrollbar. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * Pointer-following glow (homepage cards). The page sets --mx/--my on the hovered element.
+ * ::before lights the surface, ::after lights the border under the pointer.
+ */
+@layer components {
+  .spotlight {
+    position: relative;
+    isolation: isolate;
+    --spot: color-mix(in oklab, var(--primary) 16%, transparent);
+    --spot-edge: color-mix(in oklab, var(--primary) 70%, transparent);
+  }
+  .spotlight-light {
+    --spot: rgb(255 255 255 / 0.16);
+    --spot-edge: rgb(255 255 255 / 0.6);
+  }
+  .spotlight::before,
+  .spotlight::after {
+    content: '';
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  .spotlight::before {
+    z-index: -1;
+    background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 50%), var(--spot), transparent 70%);
+  }
+  .spotlight::after {
+    padding: 1px;
+    background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), var(--spot-edge), transparent 70%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+  .spotlight:hover::before,
+  .spotlight:hover::after {
+    opacity: 1;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spotlight::before,
+    .spotlight::after {
+      transition: none;
+    }
+  }
+}
+
+/* Org chart (Reporting lines): classic top-down tree with connector lines. */
+@layer components {
+  .org-tree ul {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    padding-top: 28px;
+  }
+  .org-tree > ul {
+    padding-top: 0;
+  }
+  .org-tree li {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 10px 0;
+    list-style: none;
+  }
+  .org-tree > ul > li {
+    padding-top: 0;
+  }
+  /* Horizontal line above siblings, and the drop into each card. */
+  .org-tree li::before,
+  .org-tree li::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 50%;
+    width: 50%;
+    height: 28px;
+    border-top: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border));
+  }
+  .org-tree li::after {
+    right: auto;
+    left: 50%;
+    border-left: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border));
+  }
+  .org-tree li:only-child::before,
+  .org-tree li:only-child::after {
+    border-top: 0;
+  }
+  .org-tree li:only-child::before {
+    display: none;
+  }
+  .org-tree li:first-child::before,
+  .org-tree li:last-child::after {
+    border: 0 none;
+  }
+  .org-tree li:last-child::before {
+    border-right: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border));
+    border-radius: 0 10px 0 0;
+  }
+  .org-tree li:first-child::after {
+    border-radius: 10px 0 0 0;
+  }
+  .org-tree > ul > li::before,
+  .org-tree > ul > li::after {
+    display: none;
+  }
+  /* Line down from a manager to their reports. */
+  .org-tree ul ul::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    height: 28px;
+    border-left: 2px solid color-mix(in oklab, var(--primary) 40%, var(--border));
   }
 }

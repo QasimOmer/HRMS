@@ -6,6 +6,7 @@ import { useApi, useAction } from '@/lib/hooks';
 import { Button } from './ui/button';
 import { Field, Select, Textarea } from './ui/form';
 import { Dialog } from './ui/overlay';
+import { Combobox, type ComboOption } from './ui/combobox';
 
 export interface Department {
   id: string;
@@ -15,6 +16,7 @@ export interface Department {
   headName: string | null;
   foodAllowanceEnabled: boolean;
   paidOvertimeEnabled: boolean;
+  workScheduleId: string | null;
   isActive: boolean;
   activeEmployees: number;
 }
@@ -32,6 +34,7 @@ export interface Level {
 }
 export interface DirectoryEntry {
   id: string;
+  employeeCode?: string;
   fullName: string;
   avatarFileId: string | null;
   email: string;
@@ -66,18 +69,56 @@ export function DepartmentSelect(props: React.SelectHTMLAttributes<HTMLSelectEle
   );
 }
 
-export function EmployeeSelect(props: React.SelectHTMLAttributes<HTMLSelectElement> & { placeholder?: string; filter?: (e: DirectoryEntry) => boolean }) {
+/**
+ * Employee picker: type a name, email or employee ID (e.g. EMP-0003) to find someone, even when several
+ * people share a name. Works like a select: `value` + `onChange(e)` with `e.target.value`.
+ */
+export function EmployeeSelect({
+  value,
+  onChange,
+  name,
+  placeholder,
+  filter,
+  disabled,
+  id,
+  className,
+  'aria-describedby': describedBy,
+  'aria-invalid': invalid,
+}: {
+  value?: string | number | readonly string[] | null;
+  onChange?: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  name?: string;
+  placeholder?: string;
+  filter?: (e: DirectoryEntry) => boolean;
+  disabled?: boolean;
+  id?: string;
+  className?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean | 'true' | 'false';
+}) {
   const { data } = useDirectory();
-  const { placeholder, filter, ...rest } = props;
+  const options: ComboOption[] = [
+    { value: '', label: placeholder ?? 'Select employee…' },
+    ...(data ?? []).filter(filter ?? (() => true)).map((e) => ({
+      value: e.id,
+      label: `${e.fullName} · ${e.designation}`,
+      hint: [e.employeeCode, e.email].filter(Boolean).join(' · '),
+      keywords: `${e.email} ${e.employeeCode ?? ''} ${e.departmentName}`,
+    })),
+  ];
   return (
-    <Select {...rest}>
-      <option value="">{placeholder ?? 'Select employee…'}</option>
-      {data?.filter(filter ?? (() => true)).map((e) => (
-        <option key={e.id} value={e.id}>
-          {e.fullName} · {e.designation}
-        </option>
-      ))}
-    </Select>
+    <Combobox
+      id={id}
+      className={className}
+      disabled={disabled}
+      aria-describedby={describedBy}
+      aria-invalid={invalid === true || invalid === 'true'}
+      value={value == null ? '' : String(value)}
+      options={options}
+      placeholder={placeholder ?? 'Select employee…'}
+      searchPlaceholder="Search by name, email or employee ID…"
+      onChange={(v) => onChange?.({ target: { value: v, name: name ?? '' }, currentTarget: { value: v, name: name ?? '' } } as unknown as React.ChangeEvent<HTMLSelectElement>)}
+    />
   );
 }
 

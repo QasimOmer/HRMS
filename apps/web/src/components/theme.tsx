@@ -15,8 +15,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     } catch {
       /* storage blocked */
     }
-    const initial = saved === 'dark' || saved === 'light' ? saved : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    setTheme(initial);
+    // Light is the default; dark only when the person chose it with the toggle.
+    setTheme(saved === 'dark' ? 'dark' : 'light');
   }, []);
 
   useEffect(() => {

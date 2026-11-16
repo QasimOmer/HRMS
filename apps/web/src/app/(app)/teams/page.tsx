@@ -13,6 +13,7 @@ import { DataTable } from '@/components/ui/table';
 import { useAuth } from '@/lib/auth';
 import { cn, date } from '@/lib/format';
 import { useAction, useApi } from '@/lib/hooks';
+import { DeleteButton } from '@/components/delete-button';
 
 interface Team { id: string; name: string; departmentId: string; departmentName: string; leadEmployeeId: string; leadName: string; isActive: boolean; memberCount: number }
 interface Member { employeeId: string; fullName: string; employeeCode: string; designation: string; avatarFileId: string | null; email: string; addedAt: string }
@@ -68,7 +69,7 @@ export default function TeamsPage() {
           </Card>
           {team && (
             <Card>
-              <CardHeader title={team.name} description={`Lead: ${team.leadName} · ${team.departmentName}`} action={<Button size="sm" onClick={() => setAddOpen(true)}><UserPlus className="h-3.5 w-3.5" /> Add member</Button>} />
+              <CardHeader title={team.name} description={`Lead: ${team.leadName} · ${team.departmentName}`} action={<div className="flex flex-wrap gap-1"><Button size="sm" onClick={() => setAddOpen(true)}><UserPlus className="h-3.5 w-3.5" /> Add member</Button>{admin && <DeleteButton path={`/teams/${team.id}`} what={`the ${team.name} team`} invalidate={['/teams']} onDeleted={() => setSelected('')} detail="Members become unassigned. Teams with transfer history can't be deleted." />}</div>} />
               <DataTable loading={mLoading} rows={members} rowKey={(m) => m.employeeId} empty="No members yet" columns={[
                 { key: 'n', header: 'Member', cell: (m) => <div className="flex items-center gap-3"><Avatar name={m.fullName} fileId={m.avatarFileId} size="sm" /><div><p className="font-medium">{m.fullName}</p><p className="text-xs text-muted-foreground">{m.designation}</p></div></div> },
                 { key: 'c', header: 'ID', hideOnMobile: true, cell: (m) => <span className="font-mono text-xs">{m.employeeCode}</span> },

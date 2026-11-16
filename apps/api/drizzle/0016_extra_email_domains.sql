@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN IF NOT EXISTS "extra_email_domains" text[] DEFAULT '{}'::text[] NOT NULL;

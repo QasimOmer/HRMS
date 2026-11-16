@@ -1,18 +1,20 @@
 'use client';
 
 import { PERMISSIONS as P } from '@hrms/shared';
-import { HeartPulse, Paperclip, Plus } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { HeartPulse, Plus } from 'lucide-react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { DecisionButtons } from '@/components/domain';
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, PageHeader, Stat, StatusBadge } from '@/components/ui/display';
+import { Card, CardHeader, EmptyState, PageHeader, Stat, StatusBadge } from '@/components/ui/display';
 import { Field, FormGrid, Input, Textarea } from '@/components/ui/form';
 import { Dialog, Tabs } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
-import { api, downloadFile } from '@/lib/api';
-import { useAuth } from '@/lib/auth';
+import { FileUpload } from '@/components/ui/file-upload';
+import { api } from '@/lib/api';
+import { AttachmentLinks } from '@/components/file-preview';
+import { useAuth, useMedicalEligible } from '@/lib/auth';
 import { date, money, todayLocal } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 
@@ -26,7 +28,7 @@ function ClaimsTable({ data, loading, showName, currency }: { data?: Claim[]; lo
       { key: 'd', header: 'Date', cell: (c) => date(c.claimDate) },
       { key: 'x', header: 'Description', hideOnMobile: true, cell: (c) => <span className="line-clamp-2 text-muted-foreground">{c.description}</span> },
       { key: 'a', header: 'Amount', cell: (c) => <div className="tabular-nums">{money(c.amount, currency)}{c.approvedAmount !== null && c.approvedAmount !== c.amount && <p className="text-xs text-success">approved {money(c.approvedAmount, currency)}</p>}</div> },
-      { key: 'f', header: 'Documents', cell: (c) => <div className="flex gap-1">{c.fileIds.map((_, i) => <Button key={i} size="icon" variant="ghost" className="h-7 w-7" aria-label={`Download document ${i + 1}`} onClick={() => downloadFile(`/payroll/medical/${c.id}/files/${i}`, `claim-${i + 1}`).catch((e) => toast.error(e.message))}><Paperclip className="h-3.5 w-3.5" /></Button>)}</div> },
+      { key: 'f', header: 'Documents', cell: (c) => <AttachmentLinks base={`/payroll/medical/${c.id}/files`} count={c.fileIds.length} label="Claim document" /> },
       { key: 's', header: 'Status', cell: (c) => <div className="flex flex-col gap-0.5"><StatusBadge status={c.status} step={c.currentStep} />{c.payrollRunId && <span className="text-xs text-muted-foreground">paid in payroll</span>}</div> },
       { key: 'z', header: '', cell: (c) => (c.canDecide ? <DecisionButtons path={`/payroll/medical/${c.id}/decision`} invalidate={['/payroll/medical']} extra={(approve) => (approve ? <Field label="Approved amount" hint={`Claimed ${money(c.amount, currency)}`}>{(a) => <Input {...a} type="number" data-field="approvedAmount" defaultValue={c.amount} />}</Field> : null)} /> : null) },
     ]} />
@@ -38,21 +40,22 @@ export default function MedicalPage() {
   const { can, me } = useAuth();
   const qc = useQueryClient();
   const currency = me?.tenant.currency ?? 'PKR';
-  const { data: mine, isLoading } = useApi<Res>('/payroll/medical?mine=true');
+  // Offered to this person? (HR ticks "Eligible for medical claims" per employee; the company sets the yearly limit.)
+  const eligible = useMedicalEligible();
+  const { data: mine, isLoading } = useApi<Res>(eligible ? '/payroll/medical?mine=true' : null);
   const { data: all, isLoading: allLoading } = useApi<Res>(can(P.MEDICAL_MANAGE) ? '/payroll/medical' : null);
   const [open, setOpen] = useState(false);
   const [v, setV] = useState({ amount: '', claimDate: todayLocal(), description: '' });
   const [busy, setBusy] = useState(false);
-  const files = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
 
   const submit = async () => {
-    const list = files.current?.files;
-    if (!list?.length) return toast.error('Attach at least one receipt or prescription');
+    if (!files.length) return toast.error('Attach at least one receipt or prescription');
     const fd = new FormData();
     fd.set('amount', v.amount);
     fd.set('claimDate', v.claimDate);
     fd.set('description', v.description);
-    for (const f of Array.from(list)) fd.append('files', f);
+    for (const f of files) fd.append('files', f);
     setBusy(true);
     try {
       await api.post('/payroll/medical', fd);
@@ -69,10 +72,13 @@ export default function MedicalPage() {
 
   return (
     <>
-      <PageHeader title="Medical claims" description="Claim medical expenses with proper documents. Approved claims are reimbursed in payroll." actions={me?.employee && <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New claim</Button>} />
+      <PageHeader title="Medical claims" description="Claim medical expenses with proper documents. Approved claims are reimbursed in payroll." actions={eligible && <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New claim</Button>} />
+      {!eligible && !can(P.MEDICAL_MANAGE) && (
+        <Card><EmptyState icon={HeartPulse} title="Medical claims aren't part of your benefits" description="Your company hasn't enabled medical claims for you. Ask HR if you think this is wrong." /></Card>
+      )}
       <Tabs tabs={[
         {
-          value: 'mine', label: 'My claims', hidden: !me?.employee,
+          value: 'mine', label: 'My claims', hidden: !eligible,
           content: (
             <div className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-3">
@@ -94,7 +100,7 @@ export default function MedicalPage() {
             <Field label="Date of expense" required>{(a) => <Input {...a} type="date" max={todayLocal()} value={v.claimDate} onChange={(e) => setV({ ...v, claimDate: e.target.value })} />}</Field>
           </FormGrid>
           <Field label="Description" required>{(a) => <Textarea {...a} rows={3} value={v.description} onChange={(e) => setV({ ...v, description: e.target.value })} />}</Field>
-          <Field label="Supporting documents" required>{(a) => <Input {...a} ref={files} type="file" multiple accept=".pdf,image/*" className="pt-1.5" />}</Field>
+          <Field label="Supporting documents" required>{(a) => <FileUpload {...a} value={files} onChange={setFiles} multiple maxFiles={5} accept=".pdf,image/*" required label="Upload receipts" />}</Field>
         </div>
       </Dialog>
     </>

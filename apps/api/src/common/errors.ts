@@ -15,7 +15,7 @@ import type { Response } from 'express';
 export const notFound = (what = 'Resource') => new NotFoundException({ message: `${what} not found`, code: 'NOT_FOUND' });
 export const forbidden = (message = 'You do not have access to this resource') =>
   new ForbiddenException({ message, code: 'FORBIDDEN' });
-export const conflict = (message: string, code = 'CONFLICT') => new ConflictException({ message, code });
+export const conflict = (message: string, code = 'CONFLICT', details?: Record<string, unknown>) => new ConflictException({ message, code, ...(details ? { details } : {}) });
 export const badRequest = (message: string, code = 'BAD_REQUEST') => new BadRequestException({ message, code });
 
 interface PgError {
@@ -48,6 +48,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
+      // Rate limits: a plain sentence instead of "ThrottlerException: Too Many Requests".
+      if (status === HttpStatus.TOO_MANY_REQUESTS) {
+        // The rate limiter has already set Retry-After (seconds); pass it on so the page can count down.
+        const retryAfter = Math.max(1, Math.ceil(Number(res.getHeader('Retry-After') ?? 60)) || 60);
+        res.status(status).json({ statusCode: status, code: 'TOO_MANY_REQUESTS', message: `Too many attempts. Please try again in ${retryAfter} seconds.`, details: { retryAfter } });
+        return;
+      }
       const body = exception.getResponse();
       const payload =
         typeof body === 'string'
@@ -58,6 +65,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         code: payload.code ?? HttpStatus[status],
         message: Array.isArray(payload.message) ? payload.message.join(', ') : payload.message,
         ...(payload.issues ? { issues: payload.issues } : {}),
+        ...(payload.details ? { details: payload.details } : {}),
       });
       return;
     }
@@ -68,6 +76,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return;
     }
     if (pg?.code === '23503') {
+      const p = pg as { constraint?: string; detail?: string };
+      this.logger.warn(`Foreign key failed: ${p.constraint ?? '?'} ${p.detail ?? ''}`);
       res.status(409).json({ statusCode: 409, code: 'REFERENCE', message: 'This record is linked to other data' });
       return;
     }

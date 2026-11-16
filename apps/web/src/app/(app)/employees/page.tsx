@@ -9,13 +9,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { DepartmentSelect, EmployeeSelect, useLevels } from '@/components/domain';
 import { Button } from '@/components/ui/button';
 import { Avatar, Card, PageHeader, StatusBadge } from '@/components/ui/display';
-import { Checkbox, Field, FormGrid, Input, Select } from '@/components/ui/form';
+import { Checkbox, Field, FormGrid, Input, Select, CompanyEmailInput, CnicInput, IntlPhoneInput } from '@/components/ui/form';
 import { Dialog } from '@/components/ui/overlay';
 import { DataTable, Pagination } from '@/components/ui/table';
 import { api, qs } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
-import { date, money } from '@/lib/format';
+import { date, money, todayLocal } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import type { EmployeeDetail } from '../profile/page';
 
@@ -23,7 +23,7 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   const { me } = useAuth();
   const qc = useQueryClient();
   const router = useRouter();
-  const form = useZodForm(employeeSchema, { roles: ['EMPLOYEE'], sendInvite: true, hierarchyTier: 'MEMBER', joiningDate: new Date().toISOString().slice(0, 10) } as never);
+  const form = useZodForm(employeeSchema, { roles: ['EMPLOYEE'], sendInvite: true, mustChangePassword: true, hierarchyTier: 'MEMBER', joiningDate: todayLocal(), dependents: 0, hidePhone: false } as never);
   const dept = form.watch('departmentId') as string | undefined;
   const levelId = form.watch('levelId') as string | undefined;
   const roles = (form.watch('roles') as string[] | undefined) ?? [];
@@ -34,15 +34,20 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
   useEffect(() => {
     if (level) {
       form.setValue('basicSalary', level.defaultSalary as never);
-      if (!form.getValues('designation')) form.setValue('designation', level.title as never);
+      form.setValue('designation', level.title as never, { shouldValidate: form.formState.isSubmitted });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [levelId]);
 
+  const sendInvite = form.watch('sendInvite') as boolean | undefined;
   const onSubmit = form.handleSubmit(async (v) => {
+    if (!v.sendInvite && !v.password) {
+      form.setError('password', { message: 'Set a password, or tick "Email an invitation"' });
+      return;
+    }
     try {
-      const r = await api.post<{ id: string }>('/employees', v);
-      toast.success(v.sendInvite ? 'Employee added and invitation sent' : 'Employee added');
+      const r = await api.post<{ id: string }>('/employees', v.sendInvite ? { ...v, password: undefined } : v);
+      toast.success(v.sendInvite ? 'Employee added and invitation sent' : 'Employee added. Share the password with them securely.');
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/employees') || q.queryKey[0] === '/directory' });
       onOpenChange(false);
       form.reset();
@@ -73,7 +78,7 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       <form onSubmit={onSubmit} className="space-y-5" noValidate>
         <FormGrid>
           <Field label="Full name" required error={fieldError(form, 'fullName')}>{(a) => <Input {...a} {...form.register('fullName')} />}</Field>
-          <Field label="Company email" required error={fieldError(form, 'email')}>{(a) => <Input {...a} type="email" {...form.register('email')} />}</Field>
+          <Field label="Company email" required error={fieldError(form, 'email')} hint={(me?.tenant.emailDomains?.length ?? 0) > 1 ? 'Type the name part, e.g. ali.khan, and pick the domain' : me?.tenant.emailDomain ? 'Type the name part only, e.g. ali.khan' : undefined}>{(a) => <CompanyEmailInput {...a} domain={me?.tenant.emailDomain} domains={me?.tenant.emailDomains} value={form.watch('email') as string | undefined} onChange={(v) => form.setValue('email', v as never, { shouldValidate: form.formState.isSubmitted })} />}</Field>
           <Field label="Department" required error={fieldError(form, 'departmentId')}>{(a) => <DepartmentSelect {...a} {...form.register('departmentId')} />}</Field>
           <Field label="Level" required error={fieldError(form, 'levelId')}>
             {(a) => (
@@ -83,7 +88,7 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               </Select>
             )}
           </Field>
-          <Field label="Designation" required error={fieldError(form, 'designation')}>{(a) => <Input {...a} {...form.register('designation')} />}</Field>
+          <Field label="Designation" required error={fieldError(form, 'designation')} hint="Set by the level">{(a) => <Input {...a} readOnly tabIndex={-1} className="cursor-not-allowed bg-muted text-muted-foreground" placeholder="Pick a level" {...form.register('designation')} />}</Field>
           <Field
             label="Basic salary"
             error={fieldError(form, 'basicSalary')}
@@ -93,7 +98,7 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           </Field>
           <Field label="Joining date" required error={fieldError(form, 'joiningDate')}>{(a) => <Input {...a} type="date" {...form.register('joiningDate')} />}</Field>
           <Field label="Date of birth" error={fieldError(form, 'dateOfBirth')} hint="Used for birthday wishes (year is never shown)">{(a) => <Input {...a} type="date" {...form.register('dateOfBirth', empty)} />}</Field>
-          <Field label="Reporting manager" error={fieldError(form, 'reportingManagerId')}>{(a) => <EmployeeSelect {...a} placeholder="None" {...form.register('reportingManagerId', empty)} />}</Field>
+          <Field label="Reporting manager" error={fieldError(form, 'reportingManagerId')}>{(a) => <EmployeeSelect {...a} placeholder="None" value={(form.watch('reportingManagerId') as string | null | undefined) ?? ''} onChange={(e) => form.setValue('reportingManagerId', (e.target.value || undefined) as never, { shouldDirty: true, shouldValidate: true })} />}</Field>
           <Field label="Hierarchy" hint="Position in the org chart">
             {(a) => (
               <Select {...a} {...form.register('hierarchyTier')}>
@@ -101,7 +106,13 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               </Select>
             )}
           </Field>
+          <Field label="Contact number" error={fieldError(form, 'contactNo')}>{(a) => <IntlPhoneInput {...a} value={form.watch('contactNo') as string | undefined} onChange={(x) => form.setValue('contactNo', (x || undefined) as never, { shouldValidate: form.formState.isSubmitted })} />}</Field>
+          <Field label="Emergency contact" error={fieldError(form, 'emergencyContact')}>{(a) => <IntlPhoneInput {...a} value={form.watch('emergencyContact') as string | undefined} onChange={(x) => form.setValue('emergencyContact', (x || undefined) as never, { shouldValidate: form.formState.isSubmitted })} />}</Field>
+          <Field label="Father/Guardian Name" error={fieldError(form, 'fatherName')}>{(a) => <Input {...a} {...form.register('fatherName', empty)} />}</Field>
+          <Field label="Father/Guardian CNIC" error={fieldError(form, 'fatherCnic')}>{(a) => <CnicInput {...a} {...form.register('fatherCnic', empty)} />}</Field>
+          <Field label="Number of dependents" error={fieldError(form, 'dependents')} hint="Visible to HR and Company Admin only">{(a) => <Input {...a} type="number" min={0} step={1} {...form.register('dependents', { setValueAs: (x) => (x === '' ? undefined : Number(x)) })} />}</Field>
         </FormGrid>
+        <Checkbox label="Hide phone number from directory" {...form.register('hidePhone')} />
         {assignable.length > 0 && (
           <fieldset>
             <legend className="mb-2 text-sm font-medium">Additional roles</legend>
@@ -110,7 +121,16 @@ function AddEmployeeDialog({ open, onOpenChange }: { open: boolean; onOpenChange
             </div>
           </fieldset>
         )}
+        <Checkbox label="Eligible for medical claims" {...form.register('medicalEligible')} />
         <Checkbox label="Email an invitation to set their password" {...form.register('sendInvite')} />
+        {sendInvite === false && (
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+            <Field label="Password" required error={fieldError(form, 'password')} hint="At least 12 characters with upper and lower case letters and a number.">
+              {(a) => <Input {...a} type="password" autoComplete="new-password" {...form.register('password', { setValueAs: (x) => (x === '' ? undefined : x) })} />}
+            </Field>
+            <Checkbox label="Ask them to choose their own password at first sign-in" {...form.register('mustChangePassword')} />
+          </div>
+        )}
       </form>
     </Dialog>
   );
@@ -123,8 +143,13 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState('');
   const [q, setQ] = useState('');
   const [departmentId, setDepartmentId] = useState('');
-  const [status, setStatus] = useState('ACTIVE');
+  // Everyone by default (active first); former employees stay listed until deleted.
+  const [status, setStatus] = useState('');
   const [open, setOpen] = useState(false);
+  // "Add employee" quick action on the Employees overview opens the form straight away.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('add') === '1') setOpen(true);
+  }, []);
   useEffect(() => {
     const t = setTimeout(() => {
       setQ(search);

@@ -12,3 +12,6 @@ storage/
 *.log
 *.local.md
 .DS_Store
+
+# Vercel CLI link (local only)
+.vercel/

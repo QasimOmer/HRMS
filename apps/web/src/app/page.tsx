@@ -1,5 +1,6 @@
-import { redirect } from 'next/navigation';
+import { HomePage } from './home-page';
 
+/** Public homepage: what the platform does, plans, and the way in. */
 export default function Home() {
-  redirect('/dashboard');
+  return <HomePage />;
 }

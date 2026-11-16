@@ -4,10 +4,13 @@ import {
   PERMISSIONS as P,
   decision,
   foodAllowanceRuleSchema,
+  loanDecisionSchema,
   loanRepaymentSchema,
+  loanRequestSchema,
   loanSchema,
   medicalClaimSchema,
   medicalDecisionSchema,
+  payrollReopenSchema,
   payrollRunSchema,
   payslipAdjustmentSchema,
   salaryComponentSchema,
@@ -17,10 +20,10 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { config } from '../../config';
 import { currentUser } from '../../common/context';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
 import { todayIn } from '../../common/tz';
-import { one, round2, tenantInfo } from '../../common/util';
+import { one, round2, tenantInfo, requireDelete, assertUnused, countWhere } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { ApprovalsService } from '../../core/approvals.service';
 import { NotificationsService } from '../../core/notifications.service';
@@ -38,12 +41,15 @@ import {
   payslips,
   salaryComponents,
   type PayslipLine,
+  compensationRequests,
+  incentives,
 } from '../../db/schema';
 import { PayrollService } from './payroll.service';
 import { renderPayslipPdf } from './payslip.pdf';
 
 const VISIBLE_RUN_STATUSES = ['APPROVED', 'PAID'] as const;
 
+@RequireModule('PAYROLL')
 @Controller('payroll')
 export class PayrollController {
   constructor(
@@ -81,6 +87,15 @@ export class PayrollController {
   @Audit('payroll.component_updated', 'salary_component')
   async updateComponent(@Param('id', ParseUUIDPipe) id: string, @Body(zp(salaryComponentSchema)) body: z.infer<typeof salaryComponentSchema>) {
     return one(await this.db.tx.update(salaryComponents).set(body).where(eq(salaryComponents.id, id)).returning(), 'Component');
+  }
+
+  @Delete('components/:id')
+  @RequireAny(P.PAYROLL_PROCESS)
+  @Audit('payroll.component_deleted', 'salary_component')
+  async removeComponent(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    one(await this.db.tx.delete(salaryComponents).where(eq(salaryComponents.id, id)).returning({ id: salaryComponents.id }), 'Component');
+    return { id, deleted: true };
   }
 
   /* ---------------- Payroll runs (HR + Operations approval) ---------------- */
@@ -180,6 +195,23 @@ export class PayrollController {
     return { id, status };
   }
 
+  /** Only a draft (or rejected) run can be deleted; approved payroll is part of the record. */
+  @Delete('runs/:id')
+  @RequireAny(P.PAYROLL_PROCESS)
+  @Audit('payroll.run_deleted', 'payroll_run')
+  async removeRun(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    const run = one(await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)), 'Payroll run');
+    if (!['DRAFT', 'REJECTED'].includes(run.status)) throw badRequest('Only draft payroll can be deleted. Reopen it first if it was approved.', 'NOT_DRAFT');
+    // Items a reopened run had booked go back to "not yet paid".
+    await tx.update(compensationRequests).set({ payrollRunId: null }).where(eq(compensationRequests.payrollRunId, id));
+    await tx.update(medicalClaims).set({ payrollRunId: null }).where(eq(medicalClaims.payrollRunId, id));
+    await tx.update(incentives).set({ payrollRunId: null, status: 'APPROVED' }).where(eq(incentives.payrollRunId, id));
+    await tx.delete(payrollRuns).where(eq(payrollRuns.id, id));
+    return { id, deleted: true };
+  }
+
   @Post('runs/:id/mark-paid')
   @RequireAny(P.PAYROLL_PROCESS)
   @Audit('payroll.run_paid', 'payroll_run')
@@ -188,6 +220,20 @@ export class PayrollController {
     if (run.status !== 'APPROVED') throw badRequest('Only approved runs can be marked as paid');
     await this.db.tx.update(payrollRuns).set({ status: 'PAID', paidAt: new Date() }).where(eq(payrollRuns.id, id));
     return { id, status: 'PAID' };
+  }
+
+  /** PAY-08: an approved run is locked; HR reopens it with a reason (audited), which unbooks its side effects. */
+  @Post('runs/:id/reopen')
+  @RequireAny(P.PAYROLL_PROCESS)
+  @Audit('payroll.run_reopened', 'payroll_run')
+  async reopen(@Param('id', ParseUUIDPipe) id: string, @Body(zp(payrollReopenSchema)) body: z.infer<typeof payrollReopenSchema>) {
+    const tx = this.db.tx;
+    const run = one(await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)), 'Payroll run');
+    if (run.status !== 'APPROVED') throw badRequest(run.status === 'PAID' ? 'Salaries for this month were already paid; it can no longer be reopened' : 'Only approved payroll can be reopened', 'NOT_LOCKED');
+    await this.svc.reopen(id);
+    await tx.update(payrollRuns).set({ status: 'DRAFT', currentStep: null, reopenedAt: new Date(), reopenReason: body.reason }).where(eq(payrollRuns.id, id));
+    await this.notify.notifyPermission(P.PAYROLL_APPROVE_OPS, { type: 'payroll.reopened', title: `Payroll ${run.period} was reopened by HR`, body: body.reason, link: `/payroll/runs/${id}` }, currentUser().userId);
+    return { id, status: 'DRAFT' };
   }
 
   @Post('payslips/:id/adjustments')
@@ -274,9 +320,9 @@ export class PayrollController {
   /* ---------------- Loans (D2) ---------------- */
 
   @Get('loans')
-  async loans() {
+  async loans(@Query(zp(z.object({ mine: z.coerce.boolean().optional() }))) query: { mine?: boolean }) {
     const u = currentUser();
-    const all = u.permissions.has(P.LOANS_MANAGE);
+    const all = u.permissions.has(P.LOANS_MANAGE) && !query.mine;
     const q = this.db.tx
       .select({ l: loans, fullName: employees.fullName, paid: sql<number>`coalesce((select sum(amount) from loan_repayments r where r.loan_id = ${loans.id}), 0)::float` })
       .from(loans)
@@ -296,12 +342,68 @@ export class PayrollController {
     return loan;
   }
 
+  /** LON-04: employees request a loan from their own portal, optionally with supporting documents. */
+  @Post('loans/requests')
+  @UseInterceptors(FilesInterceptor('files', 5, { limits: { fileSize: config().MAX_UPLOAD_MB * 1024 * 1024 } }))
+  @Audit('loan.requested', 'loan')
+  async requestLoan(@UploadedFiles() files: UploadedFileLike[] | undefined, @Body(zp(loanRequestSchema)) body: z.infer<typeof loanRequestSchema>) {
+    const employeeId = this.scope.requireEmployee();
+    if (body.installment > body.principal) throw badRequest('Instalment cannot exceed the loan amount');
+    const [open] = await this.db.tx.select({ id: loans.id }).from(loans).where(and(eq(loans.employeeId, employeeId), eq(loans.status, 'PENDING'))).limit(1);
+    if (open) throw badRequest('You already have a loan request waiting for HR', 'ALREADY_PENDING');
+    const saved: string[] = [];
+    for (const f of files ?? []) saved.push((await this.storage.save(f, 'document')).id);
+    const u = currentUser();
+    const row = one(await this.db.tx.insert(loans).values({ tenantId: u.tenantId, employeeId, principal: body.principal, installment: body.installment, startPeriod: body.startPeriod, reason: body.reason, status: 'PENDING', fileIds: saved, requestedByEmployee: true, createdByUserId: u.userId }).returning());
+    const wf = await this.approvals.submit('LOAN_REQUEST', row.id, employeeId, { title: `Loan request (${body.principal})`, link: '/loans' });
+    await this.db.tx.update(loans).set({ status: wf.status === 'APPROVED' ? 'ACTIVE' : 'PENDING', currentStep: wf.currentStep }).where(eq(loans.id, row.id));
+    return { ...row, currentStep: wf.currentStep };
+  }
+
+  @Post('loans/:id/decision')
+  @RequireAny(P.LOANS_MANAGE)
+  @Audit('loan.request_decided', 'loan')
+  async decideLoan(@Param('id', ParseUUIDPipe) id: string, @Body(zp(loanDecisionSchema)) body: z.infer<typeof loanDecisionSchema>) {
+    const tx = this.db.tx;
+    const loan = one(await tx.select().from(loans).where(eq(loans.id, id)), 'Loan');
+    if (loan.status !== 'PENDING') throw badRequest('This loan request was already decided');
+    const installment = body.installment ?? loan.installment;
+    if (body.approve && installment > loan.principal) throw badRequest('Instalment cannot exceed the loan amount');
+    const wf = await this.approvals.decide('LOAN_REQUEST', { id, status: 'PENDING', currentStep: loan.currentStep, employeeId: loan.employeeId }, body.approve, body.comment, { title: 'Loan request', link: '/loans' });
+    const status = wf.status === 'APPROVED' ? 'ACTIVE' : wf.status === 'REJECTED' ? 'REJECTED' : 'PENDING';
+    await tx.update(loans).set({ status, currentStep: wf.currentStep, installment, startPeriod: body.startPeriod ?? loan.startPeriod }).where(eq(loans.id, id));
+    return { id, status };
+  }
+
+  @Get('loans/:id/files/:index')
+  async loanFile(@Param('id', ParseUUIDPipe) id: string, @Param('index', ParseIntPipe) index: number) {
+    const loan = one(await this.db.tx.select().from(loans).where(eq(loans.id, id)), 'Loan');
+    const u = currentUser();
+    if (loan.employeeId !== u.employeeId && !u.permissions.has(P.LOANS_MANAGE)) throw forbidden();
+    const fileId = loan.fileIds[index];
+    if (!fileId) throw badRequest('No such file');
+    return this.storage.stream(fileId, 'attachment');
+  }
+
   @Get('loans/:id/repayments')
   async repayments(@Param('id', ParseUUIDPipe) id: string) {
     const loan = one(await this.db.tx.select().from(loans).where(eq(loans.id, id)), 'Loan');
     const u = currentUser();
     if (loan.employeeId !== u.employeeId && !u.permissions.has(P.LOANS_MANAGE)) throw forbidden();
     return this.db.tx.select().from(loanRepayments).where(eq(loanRepayments.loanId, id)).orderBy(asc(loanRepayments.paidOn));
+  }
+
+  /** For loans recorded by mistake: only when nothing has been repaid yet. */
+  @Delete('loans/:id')
+  @RequireAny(P.LOANS_MANAGE)
+  @Audit('loan.deleted', 'loan')
+  async removeLoan(@Param('id', ParseUUIDPipe) id: string) {
+    requireDelete();
+    const tx = this.db.tx;
+    one(await tx.select({ id: loans.id }).from(loans).where(eq(loans.id, id)), 'Loan');
+    assertUnused('This loan', [[await countWhere(tx, loanRepayments, eq(loanRepayments.loanId, id)), 'repayment(s)']]);
+    await tx.delete(loans).where(eq(loans.id, id));
+    return { id, deleted: true };
   }
 
   @Post('loans/:id/repayments')
@@ -348,6 +450,9 @@ export class PayrollController {
   @Audit('medical.claim_submitted', 'medical_claim')
   async claim(@UploadedFiles() files: UploadedFileLike[] | undefined, @Body(zp(medicalClaimSchema)) body: z.infer<typeof medicalClaimSchema>) {
     const employeeId = this.scope.requireEmployee();
+    const [me] = await this.db.tx.select({ eligible: employees.medicalEligible }).from(employees).where(eq(employees.id, employeeId));
+    const t = await tenantInfo(this.db.tx);
+    if (!me?.eligible || !(t.settings.medicalAnnualLimit > 0)) throw forbidden('Medical claims are not part of your benefits. Ask HR if you think this is wrong.');
     if (!files?.length) throw badRequest('Attach at least one supporting document (receipt, prescription…)', 'DOCUMENTS_REQUIRED');
     const saved = [];
     for (const f of files) saved.push((await this.storage.save(f, 'document')).id);

@@ -1,8 +1,12 @@
 'use client';
 
-import { Mail, Phone, Search, Users } from 'lucide-react';
+import { formatPhoneDisplay } from '@hrms/shared';
+import { Download, Mail, Phone, Search, Users } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { DepartmentSelect, useDirectory } from '@/components/domain';
+import { Button } from '@/components/ui/button';
+import { downloadFile, qs } from '@/lib/api';
 import { Avatar, Badge, Card, EmptyState, LoadingRows, PageHeader } from '@/components/ui/display';
 import { Input } from '@/components/ui/form';
 
@@ -12,12 +16,26 @@ export default function DirectoryPage() {
   const [dept, setDept] = useState('');
   const rows = useMemo(() => {
     const s = q.toLowerCase();
-    return (data ?? []).filter((e) => (!dept || e.departmentId === dept) && (!s || `${e.fullName} ${e.designation} ${e.departmentName} ${e.email}`.toLowerCase().includes(s)));
+    const digits = q.replace(/\D/g, '');
+    // Hidden numbers never reach the browser, so searching by phone only finds visible ones.
+    const phoneHit = (n: string | null) => digits.length >= 4 && !!n && n.replace(/\D/g, '').includes(digits);
+    return (data ?? []).filter((e) => (!dept || e.departmentId === dept) && (!s || `${e.fullName} ${e.designation} ${e.departmentName} ${e.email}`.toLowerCase().includes(s) || phoneHit(e.contactNo)));
   }, [data, q, dept]);
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      await downloadFile(`/directory/export${qs({ departmentId: dept })}`, 'directory.csv');
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <>
-      <PageHeader title="Employee directory" description={`${data?.length ?? 0} people across the company`} />
+      <PageHeader title="Employee directory" description={`${data?.length ?? 0} people across the company`} actions={<Button variant="outline" loading={exporting} onClick={() => void exportCsv()}><Download className="h-4 w-4" /> Export CSV</Button>} />
       <div className="mb-4 flex flex-wrap gap-2">
         <div className="relative min-w-56 flex-1">
           <Search className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-muted-foreground" aria-hidden />
@@ -47,13 +65,10 @@ export default function DirectoryPage() {
                 </div>
                 <div className="mt-4 space-y-1.5 text-sm">
                   <a href={`mailto:${e.email}`} className="flex items-center gap-2 truncate text-muted-foreground hover:text-primary"><Mail className="h-3.5 w-3.5 shrink-0" aria-hidden /> {e.email}</a>
-                  {e.contactNo && <a href={`tel:${e.contactNo}`} className="flex items-center gap-2 text-muted-foreground hover:text-primary"><Phone className="h-3.5 w-3.5" aria-hidden /> {e.contactNo}</a>}
+                  {e.contactNo && <a href={`tel:${e.contactNo.replace(/\s/g, '')}`} className="flex items-center gap-2 text-muted-foreground hover:text-primary"><Phone className="h-3.5 w-3.5" aria-hidden /> {formatPhoneDisplay(e.contactNo)}</a>}
                   {e.reportingManagerName && <p className="text-xs text-muted-foreground">Reports to {e.reportingManagerName}</p>}
                 </div>
-                <p className="mt-3 border-t pt-2.5 text-xs text-muted-foreground">
-                  {e.tenure}
-                  {e.since && <> · {e.since}</>}
-                </p>
+                {e.since && <p className="mt-3 border-t pt-2.5 text-xs text-muted-foreground" title={e.tenure}>{e.since}</p>}
               </Card>
             </li>
           ))}

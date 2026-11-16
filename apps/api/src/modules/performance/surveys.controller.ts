@@ -1,18 +1,27 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Put } from '@nestjs/common';
-import { PERMISSIONS as P, surveyResponseSchema, surveySchema, type SurveyInput } from '@hrms/shared';
-import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
-import type { z } from 'zod';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
+import { PERMISSIONS as P, SURVEY_AUDIENCES, surveyResponseSchema, surveySchema, type SurveyInput } from '@hrms/shared';
+import { and, asc, desc, eq, inArray, ne, or, sql } from 'drizzle-orm';
+import { z } from 'zod';
 import { currentUser } from '../../common/context';
 import { hmac } from '../../common/crypto';
-import { Audit, RequireAny } from '../../common/decorators';
+import { Audit, RequireAny, RequireModule } from '../../common/decorators';
 import { badRequest, forbidden } from '../../common/errors';
-import { one } from '../../common/util';
+import { one, requireDelete, assertUnused, countWhere } from '../../common/util';
 import { zp } from '../../common/zod.pipe';
 import { NotificationsService } from '../../core/notifications.service';
 import { DbService } from '../../db/db.service';
-import { employees, surveyResponses, surveys, teamMembers, type SurveyQuestion } from '../../db/schema';
+import {
+  employees,
+  surveyResponses,
+  surveys,
+  teamMembers,
+  type SurveyQuestion,
+} from '../../db/schema';
+
+const audienceQuery = z.object({ audience: z.enum(SURVEY_AUDIENCES), audienceId: z.uuid().optional(), subjectEmployeeId: z.uuid().optional() });
 
 /** E3 performance surveys & F7 team/department surveys. */
+@RequireModule('COMPLIANCE')
 @Controller('surveys')
 export class SurveysController {
   constructor(
@@ -34,16 +43,40 @@ export class SurveysController {
     }
   }
 
-  private async audienceEmployeeIds(s: typeof surveys.$inferSelect): Promise<string[]> {
+  /**
+   * Everyone a survey is addressed to: active employees of the company, department or team, minus the
+   * person the survey is about. Works the same for a team of 0, 1 or many members.
+   */
+  private async eligibleMembers(audience: string, audienceId: string | null | undefined, subjectEmployeeId?: string | null) {
     const tx = this.db.tx;
-    if (s.audience === 'TEAM' && s.audienceId) {
-      return (await tx.select({ id: teamMembers.employeeId }).from(teamMembers).where(eq(teamMembers.teamId, s.audienceId))).map((r) => r.id);
+    const conds = [eq(employees.employmentStatus, 'ACTIVE')];
+    if (subjectEmployeeId) conds.push(ne(employees.id, subjectEmployeeId));
+    const cols = { id: employees.id, fullName: employees.fullName, designation: employees.designation, avatarFileId: employees.avatarFileId };
+    if (audience === 'TEAM') {
+      if (!audienceId) return [];
+      return tx.select(cols).from(teamMembers).innerJoin(employees, eq(employees.id, teamMembers.employeeId)).where(and(eq(teamMembers.teamId, audienceId), ...conds)).orderBy(asc(employees.fullName));
     }
-    const q = tx.select({ id: employees.id }).from(employees);
-    const rows = s.audience === 'DEPARTMENT' && s.audienceId
-      ? await q.where(and(eq(employees.departmentId, s.audienceId), eq(employees.employmentStatus, 'ACTIVE')))
-      : await q.where(eq(employees.employmentStatus, 'ACTIVE'));
-    return rows.map((r) => r.id);
+    if (audience === 'DEPARTMENT') {
+      if (!audienceId) return [];
+      conds.push(eq(employees.departmentId, audienceId));
+    }
+    return tx.select(cols).from(employees).where(and(...conds)).orderBy(asc(employees.fullName));
+  }
+
+  private async audienceEmployeeIds(s: typeof surveys.$inferSelect): Promise<string[]> {
+    return (await this.eligibleMembers(s.audience, s.audienceId, s.subjectEmployeeId)).map((r) => r.id);
+  }
+
+  /** Members a survey would go to, for the survey builder (HR: anyone; Team Leads: their own teams). */
+  @Get('audience')
+  @RequireAny(P.SURVEYS_MANAGE, P.SURVEYS_MANAGE_TEAM)
+  async audience(@Query(zp(audienceQuery)) q: z.infer<typeof audienceQuery>) {
+    const u = currentUser();
+    if (!u.permissions.has(P.SURVEYS_MANAGE) && (q.audience !== 'TEAM' || !q.audienceId || !u.ledTeamIds.includes(q.audienceId))) {
+      throw forbidden('Team Leads can see their own teams only');
+    }
+    const members = await this.eligibleMembers(q.audience, q.audienceId, q.subjectEmployeeId);
+    return { count: members.length, members };
   }
 
   @Get('manage')
@@ -117,6 +150,17 @@ export class SurveysController {
     const [{ n }] = (await this.db.tx.select({ n: sql<number>`count(*)::int` }).from(surveyResponses).where(eq(surveyResponses.surveyId, id))) as [{ n: number }];
     if (n > 0 && JSON.stringify(s.questions) !== JSON.stringify(body.questions)) throw badRequest('Questions cannot change after responses were received');
     return one(await this.db.tx.update(surveys).set({ ...body, questions: body.questions as SurveyQuestion[] }).where(eq(surveys.id, id)).returning());
+  }
+
+  /** Deletes the survey and its responses. */
+  @Delete(':id')
+  @Audit('survey.deleted', 'survey')
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    const s = one(await this.db.tx.select().from(surveys).where(eq(surveys.id, id)), 'Survey');
+    if (!(await this.canManage(s))) throw forbidden();
+    requireDelete();
+    await this.db.tx.delete(surveys).where(eq(surveys.id, id));
+    return { id, deleted: true };
   }
 
   @Post(':id/open')

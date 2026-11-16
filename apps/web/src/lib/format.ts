@@ -44,6 +44,13 @@ export function relative(d: string | Date): string {
   return date(d);
 }
 
+/** "116 KB", "1.1 MB": file sizes everywhere (uploads, documents). */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function initials(name: string | null | undefined): string {
   if (!name) return '?';
   return name

@@ -1,7 +1,8 @@
 // Local PostgreSQL for development (no Docker / system service needed).
 // Production uses a managed Postgres or infra/docker-compose.yml instead.
 import EmbeddedPostgres from 'embedded-postgres';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { resolve } from 'node:path';
 import pg from 'pg';
 
@@ -27,11 +28,37 @@ const db = new EmbeddedPostgres({
   onLog: () => {},
 });
 
+/** Is something already listening on the port? (e.g. the database was started from another window) */
+const portInUse = () =>
+  new Promise((ok) => {
+    const sock = createConnection({ host: '127.0.0.1', port }, () => { sock.end(); ok(true); });
+    sock.on('error', () => ok(false));
+    sock.setTimeout(1500, () => { sock.destroy(); ok(false); });
+  });
+
+if (await portInUse()) {
+  console.log(`PostgreSQL is already running on localhost:${port}. Nothing to do; you can start the API and web app.`);
+  process.exit(0);
+}
+
 if (!existsSync(resolve(dataDir, 'PG_VERSION'))) {
   console.log('Initialising database cluster in .pgdata …');
   await db.initialise();
 }
-await db.start();
+try {
+  await db.start();
+} catch (e) {
+  // After a crash or restart Postgres can leave a stale lock file behind; nothing is running, so remove it and retry once.
+  const lock = resolve(dataDir, 'postmaster.pid');
+  if (existsSync(lock)) {
+    console.log('Removing a stale lock file left by an earlier run, then retrying…');
+    rmSync(lock, { force: true });
+    await db.start();
+  } else {
+    console.error(`Could not start PostgreSQL on port ${port}: ${e?.message ?? e ?? 'unknown error'}`);
+    process.exit(1);
+  }
+}
 
 const admin = new pg.Client({
   host: 'localhost',

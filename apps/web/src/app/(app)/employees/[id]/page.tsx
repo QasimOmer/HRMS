@@ -1,26 +1,83 @@
 'use client';
 
-import { BLOOD_GROUPS, EMPLOYMENT_STATUSES, HIERARCHY_LABELS, HIERARCHY_TIERS, PERMISSIONS as P, promotionSchema } from '@hrms/shared';
-import { ArrowLeft, BadgeCheck, Camera, Pencil, UserX } from 'lucide-react';
+import { BLOOD_GROUPS, EMPLOYMENT_STATUSES, HIERARCHY_LABELS, HIERARCHY_TIERS, PERMISSIONS as P, formatPhoneDisplay, phoneProblem, promotionSchema, joinedLabel } from '@hrms/shared';
+import { ArrowLeft, BadgeCheck, Camera, EyeOff, Info, KeyRound, Mail, Pencil, UserCheck, UserX } from 'lucide-react';
 import Link from 'next/link';
 import { use, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
+import { DeleteButton } from '@/components/delete-button';
 import { DepartmentSelect, EmployeeSelect, useLevels } from '@/components/domain';
 import { CareerTimeline, DocumentsPanel } from '@/components/employee-panels';
 import { Button } from '@/components/ui/button';
 import { Avatar, Badge, Card, CardBody, CardHeader, ErrorState, KeyValue, Skeleton, StatusBadge } from '@/components/ui/display';
-import { Field, FormGrid, Input, Select, Textarea } from '@/components/ui/form';
+import { Checkbox, Field, FormGrid, Input, Select, Textarea, CnicInput, IntlPhoneInput, CompanyEmailInput } from '@/components/ui/form';
+import { RecordsPanel, SocialLinksCard } from '@/components/profile-records';
 import { Dialog, Tabs } from '@/components/ui/overlay';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
-import { date, hours, money } from '@/lib/format';
+import { date, hours, money, todayLocal } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import type { EmployeeDetail } from '../../profile/page';
+import { IdCard, useIdCardContext } from '@/components/id-card';
+
+function EmployeeIdCard({ emp }: { emp: EmployeeDetail }) {
+  const { template, company } = useIdCardContext();
+  return (
+    <Card>
+      <CardHeader title="ID card" description="Uses the company's ID card template (Settings → ID card)." />
+      <CardBody><IdCard person={emp} template={template} company={company} /></CardBody>
+    </Card>
+  );
+}
+
+/** In Edit employee: email a reset link, or set a new password directly (signs them out everywhere). */
+function SignInAccess({ userId, email }: { userId: string; email: string }) {
+  const [pw, setPw] = useState('');
+  const [mustChange, setMustChange] = useState(true);
+  const [busy, setBusy] = useState<'link' | 'pw' | null>(null);
+  const run = async (kind: 'link' | 'pw') => {
+    setBusy(kind);
+    try {
+      if (kind === 'link') {
+        await api.post(`/access/users/${userId}/reset-link`, {});
+        toast.success(`Reset link emailed to ${email}`);
+      } else {
+        await api.post(`/access/users/${userId}/password`, { password: pw, mustChange });
+        toast.success('Password set. They were signed out everywhere.');
+        setPw('');
+      }
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="mt-5 space-y-3 border-t pt-4">
+      <div>
+        <p className="text-sm font-medium">Sign-in</p>
+        <p className="text-xs text-muted-foreground">Email them a link to choose a new password, or set one yourself and share it securely.</p>
+      </div>
+      <Button size="sm" variant="outline" loading={busy === 'link'} onClick={() => run('link')}><Mail className="h-4 w-4" /> Send password reset link</Button>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-0 flex-[1_1_16rem]">
+          <Field label="New password" hint="At least 12 characters with upper and lower case letters and a number.">{(a) => <Input {...a} type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} />}</Field>
+        </div>
+        <Button size="sm" variant="outline" className="mb-6" loading={busy === 'pw'} disabled={pw.length < 12} onClick={() => run('pw')}><KeyRound className="h-4 w-4" /> Reset password</Button>
+      </div>
+      <Checkbox label="Require a new password at next sign-in" checked={mustChange} onChange={(e) => setMustChange(e.target.checked)} />
+    </div>
+  );
+}
+
+const badDependents = (v: string) => v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 0);
 
 function EditDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient();
+  const { me } = useAuth();
   const [v, setV] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const { data: levels } = useLevels((v.departmentId as string) ?? emp.departmentId);
@@ -31,6 +88,7 @@ function EditDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: bo
         basicSalary: emp.basicSalary, joiningDate: emp.joiningDate, dateOfBirth: emp.dateOfBirth ?? '', reportingManagerId: emp.reportingManagerId ?? '',
         hierarchyTier: emp.hierarchyTier, employmentStatus: emp.employmentStatus, cnic: emp.cnic ?? '', fatherName: emp.fatherName ?? '',
         fatherCnic: emp.fatherCnic ?? '', bloodGroup: emp.bloodGroup ?? '', contactNo: emp.contactNo ?? '', emergencyContact: emp.emergencyContact ?? '',
+        medicalEligible: !!emp.medicalEligible, hidePhone: !!emp.hidePhone, dependents: emp.dependents ?? 0,
       });
   }, [open, emp]);
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setV((s) => ({ ...s, [k]: e.target.value }));
@@ -40,7 +98,7 @@ function EditDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: bo
       const body = Object.fromEntries(
         Object.entries(v)
           .filter(([, x]) => x !== '' && x !== undefined)
-          .map(([k, x]) => [k, k === 'basicSalary' ? Number(x) : x]),
+          .map(([k, x]) => [k, k === 'basicSalary' || k === 'dependents' ? Number(x) : x]),
       );
       if (v.reportingManagerId === '') body.reportingManagerId = null;
       await api.patch(`/employees/${emp.id}`, body);
@@ -55,14 +113,14 @@ function EditDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: bo
   };
   const s = (k: string) => String(v[k] ?? '');
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="Edit employee" description="HR can edit every field, including ones employees can't change." size="xl"
-      footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={save} loading={busy}>Save</Button></>}>
+    <Dialog open={open} onOpenChange={onOpenChange} title="Edit employee" description="Company Admin and HR can edit every field, including ones employees can't change. Setting the status back to Active restores their login." size="xl"
+      footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={save} loading={busy} disabled={!!(phoneProblem(s('contactNo')) || phoneProblem(s('emergencyContact')) || badDependents(s('dependents')))}>Save</Button></>}>
       <FormGrid cols={3}>
         <Field label="Full name">{(a) => <Input {...a} value={s('fullName')} onChange={set('fullName')} />}</Field>
-        <Field label="Company email">{(a) => <Input {...a} type="email" value={s('email')} onChange={set('email')} />}</Field>
-        <Field label="Designation">{(a) => <Input {...a} value={s('designation')} onChange={set('designation')} />}</Field>
+        <Field label="Company email">{(a) => <CompanyEmailInput {...a} domain={me?.tenant.emailDomain} domains={me?.tenant.emailDomains} value={s('email')} onChange={(v) => setV((x) => ({ ...x, email: v }))} />}</Field>
+        <Field label="Designation" hint="Set by the level">{(a) => <Input {...a} readOnly tabIndex={-1} className="cursor-not-allowed bg-muted text-muted-foreground" value={s('designation')} />}</Field>
         <Field label="Department">{(a) => <DepartmentSelect {...a} value={s('departmentId')} onChange={(e) => setV((x) => ({ ...x, departmentId: e.target.value, levelId: '' }))} />}</Field>
-        <Field label="Level">{(a) => <Select {...a} value={s('levelId')} onChange={set('levelId')}><option value="">Select…</option>{levels?.map((l) => <option key={l.id} value={l.id}>{l.code} – {l.title}</option>)}</Select>}</Field>
+        <Field label="Level" hint="Choosing a level fills in its designation and default salary">{(a) => <Select {...a} value={s('levelId')} onChange={(e) => { const l = levels?.find((x) => x.id === e.target.value); setV((x) => ({ ...x, levelId: e.target.value, ...(l ? { designation: l.title, basicSalary: l.defaultSalary } : {}) })); }}><option value="">Select…</option>{levels?.map((l) => <option key={l.id} value={l.id}>{l.code} – {l.title}</option>)}</Select>}</Field>
         <Field label="Basic salary">{(a) => <Input {...a} type="number" value={s('basicSalary')} onChange={set('basicSalary')} />}</Field>
         <Field label="Joining date">{(a) => <Input {...a} type="date" value={s('joiningDate')} onChange={set('joiningDate')} />}</Field>
         <Field label="Date of birth">{(a) => <Input {...a} type="date" value={s('dateOfBirth')} onChange={set('dateOfBirth')} />}</Field>
@@ -70,19 +128,29 @@ function EditDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: bo
         <Field label="Reporting manager">{(a) => <EmployeeSelect {...a} placeholder="None" value={s('reportingManagerId')} onChange={set('reportingManagerId')} filter={(e) => e.id !== emp.id} />}</Field>
         <Field label="Hierarchy">{(a) => <Select {...a} value={s('hierarchyTier')} onChange={set('hierarchyTier')}>{HIERARCHY_TIERS.map((t) => <option key={t} value={t}>{HIERARCHY_LABELS[t]}</option>)}</Select>}</Field>
         <Field label="Blood group">{(a) => <Select {...a} value={s('bloodGroup')} onChange={set('bloodGroup')}><option value="">—</option>{BLOOD_GROUPS.map((b) => <option key={b}>{b}</option>)}</Select>}</Field>
-        <Field label="CNIC">{(a) => <Input {...a} value={s('cnic')} onChange={set('cnic')} />}</Field>
-        <Field label="Father's name">{(a) => <Input {...a} value={s('fatherName')} onChange={set('fatherName')} />}</Field>
-        <Field label="Father's CNIC">{(a) => <Input {...a} value={s('fatherCnic')} onChange={set('fatherCnic')} />}</Field>
-        <Field label="Contact number">{(a) => <Input {...a} value={s('contactNo')} onChange={set('contactNo')} />}</Field>
-        <Field label="Emergency contact">{(a) => <Input {...a} value={s('emergencyContact')} onChange={set('emergencyContact')} />}</Field>
+        <Field label="CNIC">{(a) => <CnicInput {...a} value={s('cnic')} onChange={set('cnic')} />}</Field>
+        <Field label="Father/Guardian Name">{(a) => <Input {...a} value={s('fatherName')} onChange={set('fatherName')} />}</Field>
+        <Field label="Father/Guardian CNIC">{(a) => <CnicInput {...a} value={s('fatherCnic')} onChange={set('fatherCnic')} />}</Field>
+        <Field label="Contact number" error={phoneProblem(s('contactNo')) ?? undefined}>{(a) => <IntlPhoneInput {...a} value={s('contactNo')} onChange={(x) => setV((y) => ({ ...y, contactNo: x }))} />}</Field>
+        <Field label="Emergency contact" error={phoneProblem(s('emergencyContact')) ?? undefined}>{(a) => <IntlPhoneInput {...a} value={s('emergencyContact')} onChange={(x) => setV((y) => ({ ...y, emergencyContact: x }))} />}</Field>
+        <Field label="Number of dependents" hint="Visible to HR and Company Admin only" error={badDependents(s('dependents')) ? 'Enter a whole number, 0 or more' : undefined}>{(a) => <Input {...a} type="number" min={0} step={1} value={s('dependents')} onChange={set('dependents')} />}</Field>
       </FormGrid>
+      <div className="mt-4">
+        <Checkbox label="Hide phone number from directory" checked={!!v.hidePhone} onChange={(e) => setV((x) => ({ ...x, hidePhone: e.target.checked }))} />
+        <p className="mt-1 ml-6 text-xs text-muted-foreground">Colleagues won&apos;t see the contact number in the directory, search or exports. HR and admins still can.</p>
+      </div>
+      <div className="mt-5 border-t pt-4">
+        <Checkbox label="Eligible for medical claims" checked={!!v.medicalEligible} onChange={(e) => setV((x) => ({ ...x, medicalEligible: e.target.checked }))} />
+        <p className="mt-1 ml-6 text-xs text-muted-foreground">They can claim medical expenses up to the company's yearly limit. Without this, Medical claims is hidden for them.</p>
+      </div>
+      {emp.userId && emp.userId !== me?.user.id && <SignInAccess userId={emp.userId} email={emp.email} />}
     </Dialog>
   );
 }
 
 function PromoteDialog({ emp, open, onOpenChange, currency }: { emp: EmployeeDetail; open: boolean; onOpenChange: (o: boolean) => void; currency: string }) {
   const qc = useQueryClient();
-  const form = useZodForm(promotionSchema, { departmentId: emp.departmentId, effectiveDate: new Date().toISOString().slice(0, 10) } as never);
+  const form = useZodForm(promotionSchema, { departmentId: emp.departmentId, effectiveDate: todayLocal() } as never);
   const dept = (form.watch('departmentId') as string) || emp.departmentId;
   const levelId = form.watch('levelId') as string;
   const { data: levels } = useLevels(dept);
@@ -110,7 +178,7 @@ function PromoteDialog({ emp, open, onOpenChange, currency }: { emp: EmployeeDet
       <FormGrid>
         <Field label="Department" error={fieldError(form, 'departmentId')}>{(a) => <DepartmentSelect {...a} {...form.register('departmentId')} />}</Field>
         <Field label="New level" required error={fieldError(form, 'levelId')}>{(a) => <Select {...a} {...form.register('levelId')}><option value="">Select…</option>{levels?.filter((l) => l.isActive).map((l) => <option key={l.id} value={l.id} disabled={l.id === emp.levelId}>{l.code} – {l.title}</option>)}</Select>}</Field>
-        <Field label="Designation" error={fieldError(form, 'designation')}>{(a) => <Input {...a} {...form.register('designation')} />}</Field>
+        <Field label="Designation" error={fieldError(form, 'designation')} hint="Set by the level">{(a) => <Input {...a} readOnly tabIndex={-1} className="cursor-not-allowed bg-muted text-muted-foreground" placeholder="Pick a level" {...form.register('designation')} />}</Field>
         <Field label="Salary" error={fieldError(form, 'salary')} hint={level ? `Default ${money(level.defaultSalary, currency)}` : undefined}>{(a) => <Input {...a} type="number" {...form.register('salary', { setValueAs: (v) => (v === '' ? undefined : Number(v)) })} />}</Field>
         <Field label="Effective date" required error={fieldError(form, 'effectiveDate')}>{(a) => <Input {...a} type="date" {...form.register('effectiveDate')} />}</Field>
       </FormGrid>
@@ -119,9 +187,40 @@ function PromoteDialog({ emp, open, onOpenChange, currency }: { emp: EmployeeDet
   );
 }
 
+/** Former employee comes back. Nothing was deleted, so their history is all still there. */
+function ReactivateDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const qc = useQueryClient();
+  const [restoreLogin, setRestoreLogin] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post<{ login: string }>(`/employees/${emp.id}/reactivate`, { restoreLogin });
+      toast.success(r.login === 'restored' ? `${emp.fullName} is active again and can sign in` : r.login === 'invite_needed' ? `${emp.fullName} is active again. They still need to set a password from their invitation.` : `${emp.fullName} is active again`);
+      qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/employees') });
+      onOpenChange(false);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title={`Reactivate ${emp.fullName}?`} description="They become an active employee again with all their past records (attendance, leave, payslips, documents)." size="sm"
+      footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button onClick={go} loading={busy}><UserCheck className="h-4 w-4" /> Reactivate</Button></>}>
+      {emp.accountStatus ? (
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-1 accent-[var(--primary)]" checked={restoreLogin} onChange={(e) => setRestoreLogin(e.target.checked)} />
+          <span><span className="font-medium">Give login access again</span><span className="block text-xs text-muted-foreground">They can sign in with their existing email and password.</span></span>
+        </label>
+      ) : <p className="text-sm text-muted-foreground">This employee has no login account.</p>}
+    </Dialog>
+  );
+}
+
 function TerminateDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient();
-  const [exitDate, setExitDate] = useState(new Date().toISOString().slice(0, 10));
+  const [exitDate, setExitDate] = useState(todayLocal());
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const go = async () => {
@@ -138,7 +237,7 @@ function TerminateDialog({ emp, open, onOpenChange }: { emp: EmployeeDetail; ope
     }
   };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={`Terminate ${emp.fullName}?`} description="Their login is disabled immediately. Records are kept." size="sm"
+    <Dialog open={open} onOpenChange={onOpenChange} title={`Terminate ${emp.fullName}?`} description="Their login is disabled immediately. All their records are kept, and you can reactivate them later." size="sm"
       footer={<><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button variant="danger" onClick={go} loading={busy} disabled={reason.trim().length < 5}>Terminate</Button></>}>
       <div className="space-y-4">
         <Field label="Exit date">{(a) => <Input {...a} type="date" value={exitDate} onChange={(e) => setExitDate(e.target.value)} />}</Field>
@@ -155,18 +254,22 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
   const { can, me } = useAuth();
   const qc = useQueryClient();
   const { data: emp, isLoading, error } = useApi<EmployeeDetail>(`/employees/${id}`);
-  const to = new Date().toISOString().slice(0, 10);
+  const to = todayLocal();
   const from = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
   const { data: days } = useApi<Day[]>(emp ? `/attendance/days?employeeId=${id}&from=${from}&to=${to}` : null);
   const [edit, setEdit] = useState(false);
   const [promote, setPromote] = useState(false);
   const [terminate, setTerminate] = useState(false);
+  const [reactivate, setReactivate] = useState(false);
+  const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const currency = me?.tenant.currency ?? 'PKR';
 
   if (error) return <ErrorState message={error.message} />;
   if (isLoading || !emp) return <Skeleton className="h-96" />;
   const hr = can(P.EMPLOYEES_MANAGE);
+  const seesAll = can(P.EMPLOYEES_READ_ALL);
+  const self = me?.employee?.id === id;
 
   const uploadAvatar = async (f: File) => {
     const fd = new FormData();
@@ -201,7 +304,7 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
               <StatusBadge status={emp.employmentStatus} />
               <Badge tone="primary">{emp.levelCode} – {emp.levelTitle}</Badge>
               <Badge>{emp.employeeCode}</Badge>
-              <Badge tone="info">{emp.tenure}</Badge>
+              <span title={emp.tenure}><Badge tone="info">{joinedLabel(emp.joiningDate)}</Badge></span>
               {emp.accountStatus && <Badge tone={emp.accountStatus === 'ACTIVE' ? 'success' : 'warning'}>login {emp.accountStatus.toLowerCase()}</Badge>}
             </div>
           </div>
@@ -210,11 +313,25 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
               <Button variant="outline" onClick={() => setEdit(true)}><Pencil className="h-4 w-4" /> Edit</Button>
               {can(P.PROMOTIONS_MANAGE) && <Button variant="outline" onClick={() => setPromote(true)}><BadgeCheck className="h-4 w-4" /> Promote</Button>}
               {emp.employmentStatus === 'ACTIVE' && <Button variant="outline" className="text-danger" onClick={() => setTerminate(true)}><UserX className="h-4 w-4" /> Terminate</Button>}
+              {emp.employmentStatus !== 'ACTIVE' && <Button onClick={() => setReactivate(true)}><UserCheck className="h-4 w-4" /> Reactivate</Button>}
+              {emp.employmentStatus !== 'ACTIVE' && (
+                <DeleteButton path={`/employees/${emp.id}`} what={emp.fullName} label="Delete permanently" invalidate={['/employees', '/dashboard']} onDeleted={() => router.replace('/employees')}
+                  detail="This permanently deletes the employee and everything that belongs to them: attendance, leave, payslips, loans, documents and their login. It cannot be undone. To keep the history, leave them terminated instead." />
+              )}
             </div>
           )}
         </CardBody>
       </Card>
 
+      {emp.employmentStatus !== 'ACTIVE' && (
+        <div role="status" className="mb-6 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <p>
+            <span className="font-medium">{emp.fullName} is {emp.employmentStatus.toLowerCase().replace('_', ' ')}{emp.exitDate ? ` since ${date(emp.exitDate)}` : ''}.</span>{' '}
+            Their login is disabled, but all their records are kept until someone deletes them.{hr ? ' Use Reactivate to bring them back.' : ''}
+          </p>
+        </div>
+      )}
       <Tabs
         tabs={[
           {
@@ -225,20 +342,45 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
                 <Card>
                   <CardHeader title="Personal" />
                   <CardBody>
-                    <KeyValue items={[['Full name', emp.fullName], ['CNIC', emp.cnic ?? (hr ? null : 'Confidential')], ["Father's name", emp.fatherName], ["Father's CNIC", emp.fatherCnic ?? (hr ? null : 'Confidential')], ['Blood group', emp.bloodGroup], ['Contact', emp.contactNo], ['Emergency contact', emp.emergencyContact], ['Date of birth', emp.dateOfBirth ? date(emp.dateOfBirth, { day: 'numeric', month: 'long' }) : null]]} />
+                    <KeyValue items={[['Full name', emp.fullName], ['CNIC', emp.cnic ?? (seesAll ? null : 'Confidential')], ['Father/Guardian Name', emp.fatherName], ['Father/Guardian CNIC', emp.fatherCnic ?? (seesAll ? null : 'Confidential')], ['Blood group', emp.bloodGroup], ['Date of birth', emp.dateOfBirth ? date(emp.dateOfBirth, { day: 'numeric', month: 'long' }) : null]]} />
+                  </CardBody>
+                </Card>
+                <Card>
+                  <CardHeader title="Contact & privacy" />
+                  <CardBody>
+                    <KeyValue items={[
+                      ['Contact', emp.contactNo ? formatPhoneDisplay(emp.contactNo) : emp.hidePhone ? <span key="h" className="inline-flex items-center gap-1 text-muted-foreground"><EyeOff className="h-3.5 w-3.5" aria-hidden /> Hidden</span> : null],
+                      ['Emergency contact', emp.emergencyContact ? formatPhoneDisplay(emp.emergencyContact) : null],
+                      ['Company email', emp.email],
+                      ['Phone in directory', emp.hidePhone ? 'Hidden' : 'Shown'],
+                    ]} />
                   </CardBody>
                 </Card>
                 <Card>
                   <CardHeader title="Employment" />
                   <CardBody>
-                    <KeyValue items={[['Employee ID', emp.employeeCode], ['Company email', emp.email], ['Department', emp.departmentName], ['Level', `${emp.levelCode} – ${emp.levelTitle}`], ['Reporting manager', emp.reportingManagerName], ['Hierarchy', HIERARCHY_LABELS[emp.hierarchyTier as keyof typeof HIERARCHY_LABELS]], ['Joined', date(emp.joiningDate)], ['Exit date', emp.exitDate ? date(emp.exitDate) : null], ['Basic salary', emp.basicSalary !== null ? money(emp.basicSalary, currency) : 'Confidential'], ['Roles', emp.roles.join(', ').toLowerCase().replace(/_/g, ' ')]]} />
+                    <KeyValue items={[['Employee ID', emp.employeeCode], ['Department', emp.departmentName], ['Designation', emp.designation], ['Level', `${emp.levelCode} – ${emp.levelTitle}`], ['Team', emp.team?.teamName], ['Reporting manager', emp.reportingManagerName], ['Hierarchy', HIERARCHY_LABELS[emp.hierarchyTier as keyof typeof HIERARCHY_LABELS]], ['Joined', date(emp.joiningDate)], ['Exit date', emp.exitDate ? date(emp.exitDate) : null], ['Basic salary', emp.basicSalary !== null ? money(emp.basicSalary, currency) : 'Confidential'], ['Roles', emp.roles.join(', ').toLowerCase().replace(/_/g, ' ')]]} />
                   </CardBody>
                 </Card>
+                <div className="space-y-6">
+                  {hr && (
+                    <Card>
+                      <CardHeader title="Dependents" description="Visible to HR and Company Admin only." />
+                      <CardBody><KeyValue items={[['Number of dependents', String(emp.dependents ?? 0)]]} /></CardBody>
+                    </Card>
+                  )}
+                  <SocialLinksCard links={emp.socialLinks} editable={hr} save={async (links) => { await api.patch(`/employees/${emp.id}`, { socialLinks: links }); await qc.invalidateQueries({ queryKey: [`/employees/${id}`] }); }} />
+                </div>
               </div>
             ),
           },
-          { value: 'documents', label: 'Documents', hidden: !(can(P.EMPLOYEE_DOCS_MANAGE) || can(P.EMPLOYMENT_DOCS_MANAGE)), content: <DocumentsPanel employeeId={id} self={false} /> },
+          { value: 'experience', label: 'Experience', content: <RecordsPanel kind="experience" employeeId={id} self={self} hr={hr} /> },
+          { value: 'education', label: 'Education', content: <RecordsPanel kind="education" employeeId={id} self={self} hr={hr} /> },
+          { value: 'certifications', label: 'Certifications', content: <RecordsPanel kind="certifications" employeeId={id} self={self} hr={hr} /> },
+          { value: 'references', label: 'References', content: <RecordsPanel kind="references" employeeId={id} self={self} hr={hr} /> },
+          { value: 'documents', label: 'Supporting documents', hidden: !(can(P.EMPLOYEE_DOCS_MANAGE) || can(P.EMPLOYMENT_DOCS_MANAGE)), content: <DocumentsPanel employeeId={id} self={false} /> },
           { value: 'career', label: 'Promotions', content: <CareerTimeline employeeId={id} currency={currency} alwaysShow /> },
+          { value: 'id-card', label: 'ID card', hidden: !hr, content: <EmployeeIdCard emp={emp} /> },
           {
             value: 'attendance',
             label: 'Attendance (30 days)',
@@ -262,6 +404,7 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
       {hr && <EditDialog emp={emp} open={edit} onOpenChange={setEdit} />}
       {hr && <PromoteDialog emp={emp} open={promote} onOpenChange={setPromote} currency={currency} />}
       {hr && <TerminateDialog emp={emp} open={terminate} onOpenChange={setTerminate} />}
+      {hr && <ReactivateDialog emp={emp} open={reactivate} onOpenChange={setReactivate} />}
     </>
   );
 }

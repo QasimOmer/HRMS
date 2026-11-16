@@ -3,7 +3,7 @@
 // Login details are written to demo-credentials.local.md (git-ignored).
 import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { Client } from './smoke.mjs';
+import { Client, createCompany, platformClient } from './smoke.mjs';
 
 const API = process.env.API_URL ?? 'http://localhost:4000/api/v1';
 const TZ = 'Asia/Karachi';
@@ -46,9 +46,7 @@ async function main() {
   const password = `Demo${randomBytes(9).toString('base64url')}1a`;
   console.log(`Seeding workspace "${ws}"…`);
 
-  const admin = new Client();
-  await admin.get('/auth/csrf');
-  must(await admin.post('/auth/signup', { companyName: 'Nimbus Technologies', workspace: ws, adminName: 'Sara Admin', email: `admin@${domain}`, password }), 'signup');
+  const admin = await createCompany(await platformClient(), { companyName: 'Nimbus Technologies', workspace: ws, adminName: 'Sara Admin', email: `admin@${domain}`, password });
 
   const depts = must(await admin.get('/departments'), 'departments');
   const byCode = Object.fromEntries(depts.map((d) => [d.code, d]));
@@ -177,7 +175,7 @@ async function main() {
   const policies = [
     ['LEAVE', 'Leave Policy', 'Entitlements, applying and cancelling leave.', 'Every employee is entitled to 14 days of casual leave and 7 days of sick leave per calendar year. Compensation leave is earned from approved overtime.\n\nApply through the HR portal. Your Team Lead reviews the request first and HR gives final approval. Approved leave can be cancelled through the portal; HR reviews every cancellation.'],
     ['ATTENDANCE', 'Attendance Policy', 'Working hours, biometric attendance and corrections.', 'Working hours are 09:00–18:00, Monday to Friday, with a one-hour break. Attendance is recorded with the biometric device at the main entrance.\n\nIf you work without taking your break, you may leave early by the length of the break. Missed or incorrect punches can be corrected by submitting a correction request (Team Lead → HR).'],
-    ['LATE_ARRIVAL', 'Late Arrival Policy', 'Grace period and consequences of repeated late arrival.', 'A 15-minute grace period applies. Arrivals after 09:15 are recorded as late. Three late arrivals in a month will be discussed with your Team Lead.'],
+    ['LATE_ARRIVAL', 'Late Arrival Policy', 'Grace period and consequences of repeated late arrival.', 'There is no grace period. Any check-in after the shift start is recorded as late, with the minutes counted. Three late arrivals in a month will be discussed with your Team Lead.'],
     ['HR', 'Code of Conduct', 'Expected behaviour at work.', 'Treat colleagues with respect. Harassment, discrimination and bullying are not tolerated. Report concerns confidentially through the Complaints section.'],
   ];
   for (const [category, title, summary, content] of policies) {

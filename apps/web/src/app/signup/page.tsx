@@ -1,6 +1,6 @@
 'use client';
 
-import { MODULE_INFO, signupSchema, type BillingCycle, type Module } from '@hrms/shared';
+import { convertCurrency, isBillingCurrency, MODULE_INFO, signupSchema, type BillingCycle, type BillingCurrency, type Module } from '@hrms/shared';
 import { ArrowLeft, ArrowRight, Check, CreditCard, ShieldCheck } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
@@ -14,6 +14,7 @@ import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
 import { cn, money } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSiteName } from '@/lib/branding';
+import { SUBDOMAINS_ON, workspaceAddress } from '@/lib/workspace';
 
 interface PublicPlan { id: string; name: string; description: string | null; priceMonthly: number; priceAnnual: number; currency: string; modules: Module[]; maxEmployees: number | null }
 
@@ -25,6 +26,10 @@ function SignupInner() {
   const { data: plans, isLoading } = useApi<PublicPlan[]>('/public/plans');
   const [planId, setPlanId] = useState(params.get('plan') ?? '');
   const [cycle, setCycle] = useState<BillingCycle>(params.get('cycle') === 'ANNUAL' ? 'ANNUAL' : 'MONTHLY');
+  // Currency picked from the country on the pricing page; the company is invoiced in it.
+  const currencyParam = params.get('currency');
+  const currency: BillingCurrency = isBillingCurrency(currencyParam) ? currencyParam : 'PKR';
+  const inCurrency = (amount: number, from: string) => money(convertCurrency(amount, from, currency), currency);
   const [step, setStep] = useState<1 | 2>(params.get('plan') ? 2 : 1);
   const [error, setError] = useState<string | null>(null);
   // Plan and cycle come from the picker (sent below), not from form fields: validating hidden copies of them
@@ -43,8 +48,9 @@ function SignupInner() {
         setStep(1);
         return setError('Choose a plan first.');
       }
-      await api.post('/public/signup', { ...v, planId, cycle });
-      window.location.href = '/billing';
+      const res = await api.post<{ workspace?: string }>('/public/signup', { ...v, planId, cycle, currency });
+      // With subdomains on, the company continues at its own address (ecomalign.hrmsalign.com) and signs in there.
+      window.location.href = SUBDOMAINS_ON && res?.workspace ? workspaceAddress(res.workspace, '/login?next=/billing&welcome=1') : '/billing';
     } catch (e) {
       if (!applyServerErrors(form, e)) setError(e instanceof ApiError ? e.message : 'Could not create your account');
     }
@@ -76,7 +82,7 @@ function SignupInner() {
                   className={cn('rounded-2xl border bg-card p-5 text-left transition hover:shadow-md', planId === p.id && 'border-primary ring-2 ring-primary')}>
                   <p className="font-semibold">{p.name}</p>
                   {p.description && <p className="mt-1 text-xs text-muted-foreground">{p.description}</p>}
-                  <p className="mt-4 text-2xl font-semibold tabular-nums">{money(cycle === 'ANNUAL' ? p.priceAnnual : p.priceMonthly, p.currency)}<span className="text-sm font-normal text-muted-foreground"> / {cycle === 'ANNUAL' ? 'year' : 'month'}</span></p>
+                  <p className="mt-4 text-2xl font-semibold tabular-nums">{inCurrency(cycle === 'ANNUAL' ? p.priceAnnual : p.priceMonthly, p.currency)}<span className="text-sm font-normal text-muted-foreground"> / employee / {cycle === 'ANNUAL' ? 'year' : 'month'}</span></p>
                   <p className="text-xs text-muted-foreground">{p.maxEmployees ? `Up to ${p.maxEmployees} employees` : 'Unlimited employees'}</p>
                   <ul className="mt-4 space-y-1.5 text-sm">
                     {p.modules.map((m) => <li key={m} className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0 text-primary" /> {MODULE_INFO[m].label}</li>)}
@@ -113,8 +119,8 @@ function SignupInner() {
                 <p className="text-sm text-muted-foreground">Your plan</p>
                 <p className="text-lg font-semibold">{plan?.name}</p>
                 <div className="mt-3"><CycleToggle value={cycle} onChange={setCycle} /></div>
-                <p className="mt-4 text-3xl font-semibold tabular-nums">{plan ? money(price, plan.currency) : '—'}</p>
-                <p className="text-sm text-muted-foreground">per {cycle === 'ANNUAL' ? 'year' : 'month'}</p>
+                <p className="mt-4 text-3xl font-semibold tabular-nums">{plan ? inCurrency(price, plan.currency) : '—'}</p>
+                <p className="text-sm text-muted-foreground">per employee per {cycle === 'ANNUAL' ? 'year' : 'month'}</p>
               </CardBody>
             </Card>
             <div className="space-y-2 rounded-xl border bg-muted/30 p-4 text-sm text-muted-foreground">

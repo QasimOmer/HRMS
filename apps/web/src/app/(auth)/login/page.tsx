@@ -9,11 +9,25 @@ import { Field, Input } from '@/components/ui/form';
 import { api, ApiError } from '@/lib/api';
 import { applyServerErrors, fieldError, useZodForm } from '@/lib/form';
 import { SITE } from '@/lib/site';
+import { SITE_URL, useHostWorkspace } from '@/lib/workspace';
 import { CompanyLogo } from '@/components/brand';
 
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
+  // On a company subdomain (ecomalign.hrmsalign.com) sign in to that company only.
+  const hostWorkspace = useHostWorkspace();
+  // The company behind this subdomain: its name, or 'missing' when no company uses the address.
+  const [company, setCompany] = useState<{ name: string } | 'missing' | null>(null);
+  useEffect(() => {
+    if (!hostWorkspace) return;
+    api
+      .get<{ name: string }>(`/public/workspaces/${encodeURIComponent(hostWorkspace)}`)
+      .then((c) => setCompany({ name: c.name }))
+      .catch((e) => {
+        if (e instanceof ApiError && e.code === 'WORKSPACE_NOT_FOUND') setCompany('missing');
+      });
+  }, [hostWorkspace]);
   const [error, setError] = useState<string | null>(null);
   const [choices, setChoices] = useState<{ slug: string; name: string }[] | null>(null);
   const form = useZodForm(loginSchema, { email: '', password: '' });
@@ -28,7 +42,7 @@ function LoginForm() {
   const signIn = async (values: { email: string; password: string; workspace?: string }) => {
     setError(null);
     try {
-      await api.post('/auth/login', values);
+      await api.post('/auth/login', { ...values, workspace: values.workspace ?? hostWorkspace ?? undefined });
       const next = params.get('next');
       // Only allow same-site relative redirects (no open redirect).
       router.replace(next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard');
@@ -45,6 +59,26 @@ function LoginForm() {
     }
   };
   const onSubmit = form.handleSubmit((v) => signIn(v));
+
+  if (company === 'missing') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold tracking-tight">Company not found</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          No company uses <span className="font-medium text-foreground">{hostWorkspace}</span> as its address. Check the link you were
+          given, or ask your HR team for your company's sign-in address.
+        </p>
+        <div className="mt-6 flex flex-wrap gap-3">
+          <a href={SITE_URL} className="inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90">
+            Go to the main site
+          </a>
+          <a href={`${SITE_URL}/signup`} className="inline-flex h-10 items-center rounded-md border px-4 text-sm font-medium hover:bg-muted">
+            Create a workspace
+          </a>
+        </div>
+      </>
+    );
+  }
 
   if (choices) {
     return (
@@ -71,7 +105,16 @@ function LoginForm() {
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
-      <p className="mt-1 text-sm text-muted-foreground">Welcome back. Use your work email and password.</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {hostWorkspace ? (
+          <>Signing in to <span className="font-medium text-foreground">{company ? company.name : hostWorkspace}</span>. Use your work email and password.</>
+        ) : 'Welcome back. Use your work email and password.'}
+      </p>
+      {params.get('welcome') && (
+        <div role="status" className="mt-4 rounded-md border border-primary/30 bg-primary-soft/40 px-3 py-2 text-sm">
+          Your workspace is ready at this address. Bookmark it, then sign in to pay and activate it.
+        </div>
+      )}
       <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
         {wait > 0 ? (
           <div role="alert" className="flex items-center gap-3 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">

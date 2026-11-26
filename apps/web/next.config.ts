@@ -24,6 +24,8 @@ const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   transpilePackages: ['@hrms/shared'],
+  // Shared hosting (e.g. Hostinger) caps processes/threads; the build otherwise starts one worker per CPU.
+  ...(process.env.VERCEL ? {} : { experimental: { cpus: 2 } }),
   // Same-origin API proxy: session cookies stay SameSite=Strict and no CORS is needed.
   async rewrites() {
   if (process.env.VERCEL) {

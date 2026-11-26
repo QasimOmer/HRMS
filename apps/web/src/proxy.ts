@@ -1,7 +1,16 @@
+import { rootDomainOf, workspaceFromHost } from '@hrms/shared';
 import { NextResponse, type NextRequest } from 'next/server';
 
 /** Per-request nonce-based Content Security Policy. */
 export function proxy(request: NextRequest) {
+  // A company subdomain (ecomalign.hrmsalign.com) opens the app, not the marketing home page.
+  // The Cloudflare Worker passes the address the visitor used in x-hrms-host.
+  if (request.nextUrl.pathname === '/') {
+    const host = request.headers.get('x-hrms-host') ?? request.headers.get('host');
+    if (workspaceFromHost(host, rootDomainOf(process.env.NEXT_PUBLIC_SITE_URL || 'https://hrmsalign.com'))) {
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    }
+  }
   const nonce = btoa(crypto.randomUUID());
   const dev = process.env.NODE_ENV === 'development';
   const csp = [

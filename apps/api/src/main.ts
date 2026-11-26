@@ -12,7 +12,8 @@ import { AppModule } from './app.module';
 import { als } from './common/context';
 import { config, onVercel } from './config';
 
-async function bootstrap() {
+/** Builds the fully configured API app without listening (also used by the single-process server.js). */
+export async function createApiApp(): Promise<NestExpressApplication> {
   const cfg = config(); // validate env before anything else
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: false });
 
@@ -55,11 +56,20 @@ async function bootstrap() {
   app.enableShutdownHooks();
   // No CORS: the web app reaches the API through a same-origin proxy.
 
+  return app;
+}
+
+async function bootstrap() {
+  const cfg = config();
+  const app = await createApiApp();
   await app.listen(cfg.API_PORT);
   Logger.log(`API listening on http://localhost:${cfg.API_PORT}/api/v1`, 'Bootstrap');
 }
 
-bootstrap().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// HRMS_EMBEDDED: server.js mounts the API in its own HTTP server instead.
+if (!process.env.HRMS_EMBEDDED) {
+  bootstrap().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

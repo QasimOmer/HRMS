@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { password, phone, trimmed } from './common';
+import { BILLING_CURRENCIES } from '../pricing-currency';
 
 /** Subscription billing (Super Admin console, company Billing page, website sign-up). */
 export const BILLING_CYCLES = ['MONTHLY', 'ANNUAL'] as const;
@@ -45,6 +46,8 @@ export const signupSchema = z.object({
   password,
   planId: z.uuid(),
   cycle: z.enum(BILLING_CYCLES).default('MONTHLY'),
+  /** Currency the company is invoiced in (chosen from the country on the pricing page). */
+  currency: z.enum(BILLING_CURRENCIES).optional(),
 });
 export type SignupInput = z.infer<typeof signupSchema>;
 

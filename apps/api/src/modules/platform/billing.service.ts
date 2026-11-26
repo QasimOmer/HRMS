@@ -1,11 +1,11 @@
 import { Injectable, Logger, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { config } from '../../config';
-import { BILLING_GRACE_DAYS, invoiceTotal, planPrice, type BillingCycle, type CustomInvoiceInput } from '@hrms/shared';
+import { BILLING_GRACE_DAYS, billingCurrencyFor, convertCurrency, invoiceTotal, planPrice, type BillingCycle, type CustomInvoiceInput } from '@hrms/shared';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, lte, ne, sql } from 'drizzle-orm';
 import { badRequest, notFound } from '../../common/errors';
 import { addDays, todayIn } from '../../common/tz';
 import { DbService } from '../../db/db.service';
-import { billingInvoices, platformPaymentMethods, platformPlans, tenants } from '../../db/schema';
+import { billingInvoices, employees, platformPaymentMethods, platformPlans, tenants } from '../../db/schema';
 import { AccessService } from '../auth/access.service';
 import { renderInvoicePdf } from './invoice.pdf';
 import { PlatformSettingsService } from './platform-settings.service';
@@ -71,6 +71,17 @@ export class BillingService implements OnApplicationBootstrap, OnModuleDestroy {
     return t;
   }
 
+  /** Employees billed for a period: everyone currently ACTIVE, minimum one. */
+  private async activeEmployees(tenantId: string): Promise<number> {
+    const [r] = await this.db.inTenant(tenantId, (tx) =>
+      tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(employees)
+        .where(and(eq(employees.tenantId, tenantId), eq(employees.employmentStatus, 'ACTIVE'))),
+    );
+    return Math.max(1, Number(r?.n ?? 0));
+  }
+
   /** Tenants can only be changed from inside their own RLS scope. */
   private async updateTenant(tenantId: string, set: Partial<typeof tenants.$inferInsert>) {
     await this.db.inTenant(tenantId, (tx) => tx.update(tenants).set(set).where(eq(tenants.id, tenantId)));
@@ -86,7 +97,12 @@ export class BillingService implements OnApplicationBootstrap, OnModuleDestroy {
     const [open] = await this.db.root.select({ id: billingInvoices.id }).from(billingInvoices)
       .where(and(eq(billingInvoices.tenantId, tenantId), eq(billingInvoices.periodStart, from), ne(billingInvoices.status, 'VOID')));
     if (open) throw badRequest('There is already an invoice for that period', 'INVOICE_EXISTS');
-    const amount = planPrice(plan, t.billingCycle);
+    // Pricing is per employee: the plan price times the company's active employees (at least one).
+    // Invoiced in the company's currency (chosen at sign-up); plan prices are converted from the plan currency.
+    const currency = billingCurrencyFor(t.currency);
+    const unitPrice = convertCurrency(planPrice(plan, t.billingCycle), plan.currency, currency);
+    const seats = await this.activeEmployees(tenantId);
+    const amount = unitPrice * seats;
     const to = periodEnd(from, t.billingCycle);
     const cycleWord = t.billingCycle === 'ANNUAL' ? 'yearly' : 'monthly';
     const [row] = await this.db.root.insert(billingInvoices).values({
@@ -96,11 +112,11 @@ export class BillingService implements OnApplicationBootstrap, OnModuleDestroy {
       number: await this.nextNumber(),
       kind: 'SUBSCRIPTION',
       title: `${plan.name} subscription (${cycleWord})`,
-      items: [{ description: `${plan.name} plan, ${cycleWord}: ${from} to ${to}`, quantity: 1, unitPrice: amount }],
+      items: [{ description: `${plan.name} plan, per employee, ${cycleWord}: ${from} to ${to}`, quantity: seats, unitPrice }],
       dueDate: await this.dueDateFrom(from),
       cycle: t.billingCycle,
       amount,
-      currency: plan.currency,
+      currency,
       periodStart: from,
       periodEnd: to,
     }).returning();

@@ -1,6 +1,6 @@
-import { Body, Controller, Get, HttpCode, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query, Res, ServiceUnavailableException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { demoRequestSchema, signupSchema, type DemoRequestInput, type SignupInput } from '@hrms/shared';
+import { demoRequestSchema, isReservedWorkspace, signupSchema, type DemoRequestInput, type SignupInput } from '@hrms/shared';
 import type { Response } from 'express';
 import { and, eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
@@ -18,7 +18,7 @@ import { PlatformSettingsService, type BrandImage } from './platform-settings.se
 async function freeWorkspace(db: DbService, companyName: string): Promise<string> {
   const base = companyName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'company';
   for (let i = 0; i < 5; i++) {
-    const slug = i === 0 && base.length >= 3 ? base : `${base}-${randomBytes(2).toString('hex')}`;
+    const slug = i === 0 && base.length >= 3 && !isReservedWorkspace(base) ? base : `${base}-${randomBytes(2).toString('hex')}`;
     const [taken] = await db.root.select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, slug)).limit(1);
     if (!taken) return slug;
   }
@@ -47,6 +47,21 @@ export class BrandingController {
     return this.settings.publicPlans();
   }
 
+  /**
+   * Company subdomains: does this workspace exist, and what is the company called?
+   * Lets ecomalign.hrmsalign.com show "Sign in to EcomAlign", and a made-up subdomain a "not found" page.
+   */
+  @Get('workspaces/:slug')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  async workspace(@Param('slug') slug: string) {
+    const s = (slug ?? '').trim().toLowerCase();
+    const missing = () => new NotFoundException({ message: 'No company uses this address', code: 'WORKSPACE_NOT_FOUND' });
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(s) || isReservedWorkspace(s)) throw missing();
+    const [t] = await this.db.root.select({ name: tenants.name, status: tenants.status }).from(tenants).where(eq(tenants.slug, s)).limit(1);
+    if (!t) throw missing();
+    return { workspace: s, name: t.name, active: t.status === 'ACTIVE' };
+  }
+
   @Get('logo')
   logo(@Query('v') v: string | undefined, @Res() res: Response) {
     return this.send('logo', v, res);
@@ -70,7 +85,7 @@ export class BrandingController {
     if (!plan) throw badRequest('Choose one of the plans shown', 'PLAN_NOT_FOUND');
     const workspace = await freeWorkspace(this.db, body.companyName);
     const { tenantId, userId } = await this.auth.createCompany(
-      { companyName: body.companyName, workspace, adminName: body.adminName, email: body.email, password: body.password, mustChangePassword: false, planId: plan.id, timezone: 'Asia/Karachi', currency: plan.currency },
+      { companyName: body.companyName, workspace, adminName: body.adminName, email: body.email, password: body.password, mustChangePassword: false, planId: plan.id, timezone: 'Asia/Karachi', currency: body.currency ?? plan.currency },
       'website sign-up',
     );
     await this.db.inTenant(tenantId, (tx) => tx.update(tenants).set({ signupSource: 'SELF', billingCycle: body.cycle, billingStatus: 'UNPAID' }).where(eq(tenants.id, tenantId)));

@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import type { Permission } from '@hrms/shared';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
-import { config } from '../config';
+import { appUrlFor } from '../common/app-url';
 import { als } from '../common/context';
 import { DbService } from '../db/db.service';
-import { employees, notifications, rolePermissions, userRoles, users } from '../db/schema';
+import { employees, notifications, rolePermissions, tenants, userRoles, users } from '../db/schema';
 import { MailService } from './mail.service';
 
 export interface NotifyInput {
@@ -35,11 +35,13 @@ export class NotificationsService {
     );
     if (n.email) {
       const rows = await tx.select({ email: users.email }).from(users).where(inArray(users.id, ids));
+      const [tenant] = await tx.select({ slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId));
+      const app = appUrlFor(tenant?.slug);
       for (const r of rows) {
         await this.mail.send({
           to: r.email,
           subject: n.title,
-          text: `${n.body ?? n.title}\n\n${n.link ? `Open: ${config().APP_URL}${n.link}` : ''}`,
+          text: `${n.body ?? n.title}\n\n${n.link ? `Open: ${app}${n.link}` : ''}`,
         });
       }
     }

@@ -199,6 +199,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Not signed in (or the session could not be refreshed): send the user to the login page
+  // instead of showing loading skeletons forever.
+  useEffect(() => {
+    if (loading || me) return;
+    const next = encodeURIComponent(pathname + window.location.search);
+    window.location.replace(`/login?next=${next}`);
+  }, [loading, me, pathname]);
+
   // Gates: forced password change, onboarding documents (B2).
   useEffect(() => {
     if (!me) return;

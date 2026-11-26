@@ -1,8 +1,8 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { companyEmailDomains, suggestEmailDomain, type CreateCompanyInput, type LoginInput } from '@hrms/shared';
+import { companyEmailDomains, isReservedWorkspace, suggestEmailDomain, type CreateCompanyInput, type LoginInput } from '@hrms/shared';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { config } from '../../config';
+import { appUrlFor } from '../../common/app-url';
 import { als } from '../../common/context';
 import { hashPassword, randomToken, sha256, verifyPassword } from '../../common/crypto';
 import { badRequest, conflict } from '../../common/errors';
@@ -103,6 +103,7 @@ export class AuthService {
   async createCompany(input: CreateCompanyInput, createdBy: string): Promise<{ tenantId: string; userId: string; invited: boolean }> {
     const [existing] = await this.db.root.select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, input.workspace)).limit(1);
     if (existing) throw conflict('That workspace name is taken', 'WORKSPACE_TAKEN');
+    if (isReservedWorkspace(input.workspace)) throw conflict('That workspace name is reserved. Choose another one.', 'WORKSPACE_RESERVED');
 
     if (await emailInUse(this.db, input.email)) throw conflict('This email is already used by another account. Use a different email for the Company Admin.', 'EMAIL_TAKEN');
     const plan = input.planId ? (await this.db.root.select().from(platformPlans).where(eq(platformPlans.id, input.planId)))[0] : undefined;
@@ -322,7 +323,7 @@ export class AuthService {
     await tx.update(userTokens).set({ usedAt: new Date() }).where(and(eq(userTokens.userId, user.id), eq(userTokens.purpose, purpose), isNull(userTokens.usedAt)));
     await tx.insert(userTokens).values({ tenantId, userId: user.id, purpose, tokenHash: sha256(secret), expiresAt: new Date(Date.now() + ttl), createdByUserId });
     const [tenant] = await tx.select({ name: tenants.name, slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId));
-    const link = `${config().APP_URL}/reset-password?token=${encodeURIComponent(`${tenantId}.${secret}`)}${purpose === 'INVITE' ? '&invite=1' : ''}`;
+    const link = `${appUrlFor(tenant?.slug)}/reset-password?token=${encodeURIComponent(`${tenantId}.${secret}`)}${purpose === 'INVITE' ? '&invite=1' : ''}`;
     await this.mail.send({
       to: user.email,
       subject: purpose === 'INVITE' ? `You're invited to ${tenant?.name} on ${await this.platform.name()}` : `Reset your ${await this.platform.name()} password`,
@@ -339,7 +340,7 @@ export class AuthService {
    */
   async sendCompanyWelcome(tx: Tx, tenantId: string, admin: { id: string; email: string; name: string }, invite: boolean) {
     const [tenant] = await tx.select({ name: tenants.name, slug: tenants.slug }).from(tenants).where(eq(tenants.id, tenantId));
-    const app = config().APP_URL;
+    const app = appUrlFor(tenant?.slug);
     let action: string;
     if (invite) {
       const secret = randomToken(32);

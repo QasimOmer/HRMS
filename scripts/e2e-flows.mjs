@@ -515,7 +515,8 @@ async function main() {
   const zAgain = await Z.post('/attendance/me/clock', { type: 'IN' });
   expect(zAgain.status === 400 && zAgain.data.code === 'CLOCK_STATE', 'cannot sign in twice', zAgain.data);
   expect((await Z.post('/attendance/me/clock', { type: 'BREAK_END' })).data.code === 'CLOCK_STATE', 'cannot end a break that was not started');
-  expect((await Z.post('/attendance/me/clock', { type: 'BREAK_START' })).data.code === 'CLOCK_TOO_SOON', 'actions are spaced out (no double clicks)');
+  const tooSoon = await Z.post('/attendance/me/clock', { type: 'BREAK_START' });
+  expect(tooSoon.status === 400 && tooSoon.data.code === 'CLOCK_TOO_SOON', 'actions are spaced out (no double clicks)', tooSoon);
   const zDash = (await Z.get('/dashboard')).data.employee.signIn;
   expect(zDash.source === 'HOME' && zDash.checkIn && !zDash.checkOut, 'dashboard shows signed in from home, still at work', zDash);
   expect((await E.get('/attendance/me/clock')).data.state !== undefined && (await OPS.post('/attendance/me/clock', { type: 'FLY' })).status === 400, 'only the four actions are accepted');
@@ -665,7 +666,16 @@ async function main() {
   expect(pm.status === 201, 'Super Admin adds a payment method', pm);
   await platform.patch(`/platform/companies/${companyId}`, { planId: starter.id, billingCycle: 'ANNUAL' });
   const inv = await platform.post(`/platform/companies/${companyId}/invoices`);
-  expect(inv.status === 201 && inv.data.cycle === 'ANNUAL' && inv.data.amount === (starter.priceAnnual ?? starter.priceMonthly * 12), 'yearly invoice at the annual price', inv);
+  // Pricing is per active employee: the yearly plan price times the company's active staff (at least one).
+  const perEmployee = starter.priceAnnual ?? starter.priceMonthly * 12;
+  // The invoice is in the company's currency, so the plan price is converted when the plan uses another one.
+  const line = inv.data.items?.[0];
+  expect(
+    inv.status === 201 && inv.data.cycle === 'ANNUAL' && line.quantity >= 1 && inv.data.amount === line.unitPrice * line.quantity &&
+      (inv.data.currency !== starter.currency || line.unitPrice === perEmployee),
+    'yearly invoice at the annual price per active employee',
+    inv,
+  );
   expect((await platform.post(`/platform/companies/${companyId}/unpaid`, {})).status === 200, 'Super Admin marks the company unpaid');
   const lockedOut = await E.get('/dashboard');
   expect((await E.get('/me/profile')).status === 200, 'own profile (and password change) still open while unpaid');

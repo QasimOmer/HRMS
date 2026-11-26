@@ -260,8 +260,8 @@ export class AttendanceController {
    * today's attendance is recalculated. Signing in "from home" without an approved work-from-home request
    * sends one for today to the Team Lead → HR, like any other work-from-home request.
    */
+  // No per-IP limit here: a whole office often shares one IP. The 30-second gap per employee stops double clicks.
   @Post('me/clock')
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Audit('attendance.self_punch', 'employee')
   async punch(@Body(zp(clockPunchSchema)) body: ClockPunchInput) {
     const employeeId = this.scope.requireEmployee();
